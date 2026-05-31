@@ -720,7 +720,7 @@ body {
 }
 .chart-card h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
 .chart-wrap { position: relative; }
-.chart-wrap canvas { width: 100% !important; }
+.chart-wrap canvas { width: 100%; }
 
 /* ═══ Footer ═══ */
 footer {
@@ -833,7 +833,7 @@ footer {
   </div>
   <div class="chart-card">
     <h3>DISTRIBUTION</h3>
-    <div class="chart-wrap" style="height:260px"><canvas id="provChart"></canvas></div>
+    <div class="chart-wrap" style="height:260px; max-width:260px; margin:0 auto"><canvas id="provChart"></canvas></div>
   </div>
 </div>
 
@@ -1138,6 +1138,8 @@ function initCharts() {
       },
       options: {
         cutout: '60%',
+        maintainAspectRatio: true,
+        aspectRatio: 1,
         plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } }
       }
     }
