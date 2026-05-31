@@ -168,3 +168,14 @@ python3 -m unittest discover -s tests
 ## License
 
 MIT
+
+---
+
+## v2.2.3 修复
+
+- **Summary cards 按当前 metric 动态计算** — Today/Total/Daily Avg/Peak 全部从 `days` 精确计算
+- **7 天小时粒度下 Daily Avg 按自然日计算** — 先按日合并再平均
+- **Cache Hit Rate 指标正确处理** — 按 `cache_read/(input+cache_read)` 公式重算
+- **Cache Hit Trend legend 支持 solo 模式** — 点击单条线只显示该线，再点恢复全部
+- **Model/Provider 排序跟随当前 metric** — 切换指标后排行分布真实反映
+- **Cache Hit Trend tooltip 增强** — 显示 cache hit % / input / cache_read / cache_write

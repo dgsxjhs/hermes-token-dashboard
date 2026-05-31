@@ -167,6 +167,68 @@ class TestNoMorePycTracking(unittest.TestCase):
         content = open(gitignore).read()
         self.assertIn("__pycache__", content)
         self.assertIn("*.pyc", content)
+        open(gitignore).close()
+
+
+class TestV223Fields(unittest.TestCase):
+    """v2.2.3: verify metric-specific fields in all API structures."""
+
+    def setUp(self): self.dash = _dash
+
+    def _make_session(self, model="gpt-5.4", provider="openai", inp=1000, out=100, cr=5000, cw=0, rt=50, msg=5, api=3):
+        return {"id": "test-1", "model": model, "billing_provider": provider,
+                "started_at": 1700000000.0, "ended_at": 1700000100.0, "source": "test",
+                "input_tokens": inp, "output_tokens": out, "cache_read_tokens": cr,
+                "cache_write_tokens": cw, "reasoning_tokens": rt,
+                "message_count": msg, "tool_call_count": 0, "api_call_count": api}
+
+    def test_days_has_all_metric_fields(self):
+        s = [self._make_session()]
+        stats = self.dash.aggregate_stats(s)
+        d = stats["days"][0]
+        for field in ["total", "active", "input", "output", "reasoning", "cache_read", "cache_write", "cache_hit_rate", "estimated_cost"]:
+            self.assertIn(field, d, f"days entry missing: {field}")
+
+    def test_cache_hit_rate_in_days(self):
+        s = [self._make_session(inp=1000, cr=4000)]
+        stats = self.dash.aggregate_stats(s)
+        self.assertAlmostEqual(stats["days"][0]["cache_hit_rate"], 4000/5000*100, places=0)
+
+    def test_7day_hourly_days(self):
+        import time; now = time.time()
+        sessions = [{"id": f"h-{i}", "model": "x", "billing_provider": "p",
+                      "started_at": now - i*3600, "ended_at": now - i*3600+100, "source": "t",
+                      "input_tokens": 100, "output_tokens": 0, "cache_read_tokens": 0,
+                      "cache_write_tokens": 0, "reasoning_tokens": 0,
+                      "message_count": 0, "tool_call_count": 0, "api_call_count": 1} for i in range(24)]
+        stats = self.dash.aggregate_stats(sessions, range_days=7)
+        self.assertGreater(len(stats["days"]), 0)
+        self.assertIn("T", stats["days"][0]["date"])
+
+    def test_30day_daily_days(self):
+        s = [self._make_session()]
+        stats = self.dash.aggregate_stats(s, range_days=30)
+        if stats["days"]:
+            self.assertNotIn("T", stats["days"][0]["date"])
+
+    def test_estimated_cost_in_summary(self):
+        s = [self._make_session()]
+        stats = self.dash.aggregate_stats(s)
+        self.assertIn("estimated_cost", stats["summary"])
+
+    def test_runtime_dedup_field(self):
+        s = [self._make_session()]
+        stats = self.dash.aggregate_stats(s)
+        self.assertIn("runtime_dedup", stats["summary"])
+
+    def test_pm_trends_days_fields(self):
+        s = [self._make_session()]
+        stats = self.dash.aggregate_stats(s)
+        if stats["provider_model_trends"]:
+            pmt = stats["provider_model_trends"][0]
+            d0 = pmt["days"][0]
+            for field in ["date", "input", "cache_read", "cache_write", "cache_hit_rate", "total"]:
+                self.assertIn(field, d0, f"pm_trends day missing: {field}")
 
 
 if __name__ == "__main__":
