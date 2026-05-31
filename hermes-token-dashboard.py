@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 """
-Hermes Token Dashboard v2 — shadcn/ui 风格 · Recharts 级折线图 · 缓存命中率仪表盘
+Hermes Token Dashboard v2.1 — shadcn/ui 风格 · 折线图面积填充 · 缓存命中率仪表盘
 数据源: ~/.hermes/state.db → sessions 表
 启动: python3 hermes-token-dashboard.py → http://localhost:8765
+
+v2.1 changelog:
+- 修复 range=all/null 报错
+- 7 天范围使用 hour_trend 小时粒度
+- 修复 free 模型计费误判（优先检测免费关键词）
+- WAL 模式刷新（合并检查 .db / .db-wal / .db-shm）
+- 修正 cache_hit_pct 公式为 cache_read / (input + cache_read)
+- API 错误处理：DB 不存在/表缺失/字段缺失不崩溃
+- 移除未使用的 hashlib import
 """
 
 import sqlite3
 import json
 import time
 import os
-import hashlib
 import threading
 import http.server
 from urllib.parse import urlparse, parse_qs
@@ -19,10 +27,12 @@ from datetime import datetime, timezone, timedelta
 # Config
 # ═══════════════════════════════════════════════════════════════
 DB_PATH = os.path.expanduser("~/.hermes/state.db")
+DB_WAL_PATH = DB_PATH + "-wal"
+DB_SHM_PATH = DB_PATH + "-shm"
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8765"))
 POLL_INTERVAL = 3
-TZ = timezone(timedelta(hours=8))
+TZ = timezone(timedelta(hours=8))  # UTC+8, 北京时间
 
 # ═══════════════════════════════════════════════════════════════
 # Pricing table (USD / 1M tokens)
@@ -50,57 +60,94 @@ FREE_KEYWORDS = [":free", "mimo-free", "mimo-v2.5-free", "gemma", "nemotron", "g
 
 
 def get_pricing(model_name: str | None) -> tuple[dict, str]:
+    """返回 (定价dict, 匹配到的key名)。
+    v2.1: 优先检测免费关键词，再匹配付费价格表，避免 mimo-v2.5:free 误判为 mimo-v2.5。"""
     if not model_name:
         return MODEL_PRICING["default"], "default"
-    original = model_name
-    if original.lower() in MODEL_PRICING:
-        return MODEL_PRICING[original.lower()], original.lower()
-    if "/" in original:
-        model_name = original.split("/")[-1]
+
+    lower_full = model_name.lower()
+
+    # 1. 精确匹配 MODEL_PRICING 中的 key（如 "mimo-v2.5-free"）
+    if lower_full in MODEL_PRICING:
+        return MODEL_PRICING[lower_full], lower_full
+
+    # 2. 优先检测免费关键词（在任何前缀匹配之前）
+    for kw in FREE_KEYWORDS:
+        if kw in lower_full:
+            free = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "reasoning": 0}
+            return free, "free"
+
+    # 3. 剥掉 org/ 前缀（OpenRouter 格式）
+    stripped = model_name
+    if "/" in stripped:
+        stripped = stripped.split("/")[-1]
+
+    # 4. 前缀匹配付费价格表（最长 key 优先）
     sorted_keys = sorted([k for k in MODEL_PRICING if k != "default"], key=len, reverse=True)
-    lower = model_name.lower()
+    lower = stripped.lower()
     for key in sorted_keys:
         if lower.startswith(key):
             return MODEL_PRICING[key], key
-    for kw in FREE_KEYWORDS:
-        if kw in lower:
-            free = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "reasoning": 0}
-            return free, "free"
+
+    # 5. 未匹配 → 默认价格
     return MODEL_PRICING["default"], "default"
 
 
 # ═══════════════════════════════════════════════════════════════
-# Data Engine with mtime+size cache
+# Data Engine with WAL-aware mtime+size cache
 # ═══════════════════════════════════════════════════════════════
-_cache: dict | None = None
+_cache: list[dict] | None = None
 _cache_signature: str = ""
 
 
-def _db_signature() -> str:
+def _file_mtime_size(path: str) -> str:
+    """返回文件的 mtime:size 字符串，不存在则返回空。"""
     try:
-        stat = os.stat(DB_PATH)
+        stat = os.stat(path)
         return f"{stat.st_mtime}:{stat.st_size}"
     except OSError:
         return ""
 
 
+def _db_signature() -> str:
+    """v2.1: 合并检查 state.db / state.db-wal / state.db-shm，
+    任一文件变化即触发刷新。"""
+    parts = [
+        _file_mtime_size(DB_PATH),
+        _file_mtime_size(DB_WAL_PATH),
+        _file_mtime_size(DB_SHM_PATH),
+    ]
+    return "|".join(parts)
+
+
+class DatabaseError(Exception):
+    """数据库不可用时的异常。"""
+    pass
+
+
 def _read_db() -> list[dict]:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, model, billing_provider, started_at, ended_at, source,
-               input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-               reasoning_tokens, message_count, tool_call_count, api_call_count
-        FROM sessions
-        ORDER BY started_at DESC
-    """)
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return rows
+    """v2.1: 捕获 sqlite3 异常，抛出 DatabaseError 而非崩溃。"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, model, billing_provider, started_at, ended_at, source,
+                   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                   reasoning_tokens, message_count, tool_call_count, api_call_count
+            FROM sessions
+            ORDER BY started_at DESC
+        """)
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
+    except sqlite3.OperationalError as e:
+        raise DatabaseError(f"Database error: {e}") from e
+    except sqlite3.DatabaseError as e:
+        raise DatabaseError(f"Database error: {e}") from e
 
 
-def get_data(force=False) -> list[dict]:
+def get_data(force: bool = False) -> list[dict]:
     global _cache, _cache_signature
     sig = _db_signature()
     if not force and _cache is not None and sig == _cache_signature:
@@ -108,6 +155,21 @@ def get_data(force=False) -> list[dict]:
     _cache = _read_db()
     _cache_signature = sig
     return _cache
+
+
+# ═══════════════════════════════════════════════════════════════
+# Aggregation
+# ═══════════════════════════════════════════════════════════════
+
+def normalize_model(m: str | None) -> str:
+    """归一化模型名：去掉 @provider: 和 org/ 前缀。"""
+    if not m:
+        return "unknown"
+    if m.startswith("@"):
+        m = m.split(":", 1)[-1] if ":" in m else m
+    if "/" in m:
+        m = m.split("/")[-1]
+    return m
 
 
 def aggregate_stats(sessions: list[dict], range_days: int | None = None) -> dict:
@@ -129,24 +191,15 @@ def aggregate_stats(sessions: list[dict], range_days: int | None = None) -> dict
     intervals = []
 
     for s in sessions:
-        inp = s["input_tokens"] or 0
-        out = s["output_tokens"] or 0
-        cr = s["cache_read_tokens"] or 0
-        cw = s["cache_write_tokens"] or 0
-        rt = s["reasoning_tokens"] or 0
-        api = s["api_call_count"] or 0
-        msg = s["message_count"] or 0
-        model = s["model"] or "unknown"
-        provider = s["billing_provider"] or "unknown"
-
-        # Normalize model name
-        def normalize_model(m):
-            if not m: return "unknown"
-            if m.startswith("@"):
-                m = m.split(":", 1)[-1] if ":" in m else m
-            if "/" in m:
-                m = m.split("/")[-1]
-            return m
+        inp = s.get("input_tokens") or 0
+        out = s.get("output_tokens") or 0
+        cr = s.get("cache_read_tokens") or 0
+        cw = s.get("cache_write_tokens") or 0
+        rt = s.get("reasoning_tokens") or 0
+        api = s.get("api_call_count") or 0
+        msg = s.get("message_count") or 0
+        model = s.get("model") or "unknown"
+        provider = s.get("billing_provider") or "unknown"
 
         model_key = normalize_model(model)
 
@@ -158,20 +211,22 @@ def aggregate_stats(sessions: list[dict], range_days: int | None = None) -> dict
         agg["api_calls"] += api
         agg["messages"] += msg
 
+        # 使用原始 model 名做定价匹配
         pricing, _ = get_pricing(model)
         cost = (inp * pricing["input"] + out * pricing["output"] +
                 cr * pricing["cache_read"] + cw * pricing["cache_write"] +
                 rt * pricing["reasoning"]) / 1_000_000
         agg["cost"] += cost
 
-        if s["started_at"]:
+        if s.get("started_at"):
             st = datetime.fromtimestamp(s["started_at"], TZ)
             if st >= today_start:
                 today_tokens += inp + out + cr + cw + rt
 
+        # 按模型
         if model_key not in by_model:
             by_model[model_key] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
-                               "reasoning": 0, "sessions": 0, "cost": 0, "api_calls": 0}
+                                   "reasoning": 0, "sessions": 0, "cost": 0, "api_calls": 0}
         bm = by_model[model_key]
         bm["input"] += inp
         bm["output"] += out
@@ -182,9 +237,11 @@ def aggregate_stats(sessions: list[dict], range_days: int | None = None) -> dict
         bm["cost"] += cost
         bm["api_calls"] += api
 
+        # 按 Provider
         by_provider[provider] = by_provider.get(provider, 0) + inp + out + cr + cw + rt
 
-        if s["started_at"]:
+        if s.get("started_at"):
+            # 按天
             day_key = st.strftime("%Y-%m-%d")
             if day_key not in by_day:
                 by_day[day_key] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
@@ -198,6 +255,7 @@ def aggregate_stats(sessions: list[dict], range_days: int | None = None) -> dict
             bd["messages"] += msg
             bd["sessions"] += 1
 
+            # 按小时
             hour_key = st.strftime("%Y-%m-%dT%H:00")
             if hour_key not in by_hour:
                 by_hour[hour_key] = {"input": 0, "output": 0, "total": 0}
@@ -205,12 +263,20 @@ def aggregate_stats(sessions: list[dict], range_days: int | None = None) -> dict
             by_hour[hour_key]["output"] += out
             by_hour[hour_key]["total"] += inp + out + cr + cw + rt
 
-        if s["started_at"] and s["ended_at"]:
+        # 运行时长区间
+        if s.get("started_at") and s.get("ended_at"):
             intervals.append((s["started_at"], s["ended_at"]))
 
-    peak_day = max(by_day.items(), key=lambda x: (x[1]["input"] + x[1]["output"] + x[1]["cache_read"] + x[1]["cache_write"] + x[1]["reasoning"]), default=("—", {}))
-    peak_val = (peak_day[1].get("input",0) + peak_day[1].get("output",0) + peak_day[1].get("cache_read",0) + peak_day[1].get("cache_write",0) + peak_day[1].get("reasoning",0))
+    # 峰值
+    peak_day = max(by_day.items(),
+                   key=lambda x: (x[1]["input"] + x[1]["output"] + x[1]["cache_read"] +
+                                  x[1]["cache_write"] + x[1]["reasoning"]),
+                   default=("—", {}))
+    peak_val = (peak_day[1].get("input", 0) + peak_day[1].get("output", 0) +
+                peak_day[1].get("cache_read", 0) + peak_day[1].get("cache_write", 0) +
+                peak_day[1].get("reasoning", 0))
 
+    # 去重运行时长
     runtime_dedup = 0
     if intervals:
         intervals.sort()
@@ -224,18 +290,31 @@ def aggregate_stats(sessions: list[dict], range_days: int | None = None) -> dict
         runtime_dedup = sum(e - s for s, e in merged)
 
     all_total = agg["input"] + agg["output"] + agg["cache_read"] + agg["cache_write"] + agg["reasoning"]
-    cache_hit = agg["cache_read"] / all_total * 100 if all_total > 0 else 0.0
 
+    # v2.1: 缓存命中率公式修正为 input side 口径
+    cache_hit_denom = agg["input"] + agg["cache_read"]
+    cache_hit = agg["cache_read"] / cache_hit_denom * 100 if cache_hit_denom > 0 else 0.0
+
+    # v2.1: 按模型缓存命中率同样修正
     model_cache_rates = []
     for m, d in by_model.items():
+        mt_input_side = d["input"] + d["cache_read"]
         mt = d["input"] + d["output"] + d["cache_read"] + d["cache_write"] + d["reasoning"]
-        if mt > 0:
+        if mt_input_side > 0:
             model_cache_rates.append({
                 "model": m,
                 "total": mt,
-                "cache_hit_pct": round(d["cache_read"] / mt * 100, 2)
+                "cache_hit_pct": round(d["cache_read"] / mt_input_side * 100, 2),
+            })
+        elif mt > 0:
+            # 极少数情况有 output 但没有 input/cache_read（不太可能但仍处理）
+            model_cache_rates.append({
+                "model": m,
+                "total": mt,
+                "cache_hit_pct": 0.0,
             })
 
+    # 模型排行 Top 8
     model_ranking = sorted(
         [{"model": m, "total": d["input"] + d["output"] + d["cache_read"] + d["cache_write"] + d["reasoning"],
           "cost": d["cost"], "sessions": d["sessions"], "api_calls": d["api_calls"]}
@@ -243,6 +322,7 @@ def aggregate_stats(sessions: list[dict], range_days: int | None = None) -> dict
         key=lambda x: x["total"], reverse=True
     )[:8]
 
+    # Provider 分布
     provider_list = sorted(
         [{"provider": p, "total": t} for p, t in by_provider.items()],
         key=lambda x: x["total"], reverse=True
@@ -256,7 +336,7 @@ def aggregate_stats(sessions: list[dict], range_days: int | None = None) -> dict
     days_count = len(day_trend) or 1
     daily_avg = all_total / days_count
     active_cutoff = (now - timedelta(minutes=30)).timestamp()
-    active_sessions = len([s for s in sessions if s["started_at"] and s["started_at"] >= active_cutoff])
+    active_sessions = len([s for s in sessions if s.get("started_at") and s["started_at"] >= active_cutoff])
 
     return {
         "meta": {
@@ -264,6 +344,7 @@ def aggregate_stats(sessions: list[dict], range_days: int | None = None) -> dict
             "range": str(range_days) if range_days else "all",
             "first_day": first_day,
             "last_day": last_day,
+            "timezone": "UTC+8",
         },
         "summary": {
             "total": all_total,
@@ -511,7 +592,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="stat-card"><div class="label">Messages <span class="icon icon-rose">&#x1F4AC;</span></div><div class="value" id="cardMessages">—</div><div class="sub" id="cardMsgDay">—</div></div>
   </div>
   <div class="chart-row">
-    <div class="chart-card"><h3>TREND <span class="badge">每日趋势</span></h3><div class="chart-wrap"><canvas id="trendChart"></canvas></div></div>
+    <div class="chart-card"><h3>TREND <span class="badge" id="trendBadge">每日趋势</span></h3><div class="chart-wrap"><canvas id="trendChart"></canvas></div></div>
     <div class="chart-card">
       <h3>BREAKDOWN <span class="badge">Token 组成</span></h3>
       <div class="gauges-row">
@@ -532,10 +613,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
   </div>
   <div class="chart-card" style="margin-bottom:14px">
-    <h3>PERFORMANCE <span class="badge">缓存命中率 · 按模型</span></h3>
+    <h3>PERFORMANCE <span class="badge">缓存命中率 (input side)</span></h3>
     <div class="chart-wrap" style="height:200px;"><canvas id="cacheHitChart"></canvas></div>
   </div>
-  <footer>Hermes Token Dashboard · <strong>state.db</strong> · Auto-refresh every 3s · v2.0</footer>
+  <footer>Hermes Token Dashboard · <strong>state.db</strong> · Auto-refresh every 3s · v2.1 · UTC+8</footer>
 </div>
 <script>
 let currentRange = 30;
@@ -561,7 +642,7 @@ function initCharts() {
   trendChart = new Chart(tCtx, {type:'line',data:{labels:[],datasets:[
     {label:'Total Tokens',data:[],borderColor:'#3b82f6',backgroundColor:tGrad,fill:true,tension:0.3,pointRadius:0,pointHitRadius:8,borderWidth:2,yAxisID:'y'},
     {label:'Messages',data:[],borderColor:'#10b981',backgroundColor:gGrad,fill:true,tension:0.3,pointRadius:0,pointHitRadius:8,borderWidth:1.5,borderDash:[5,3],yAxisID:'y1'}
-  ]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:{labels:{usePointStyle:true,pointStyleWidth:8,padding:20,font:{size:11},color:'#64748b'}},tooltip:{backgroundColor:'#fff',titleColor:'#0f172a',bodyColor:'#64748b',borderColor:'#e2e8f0',borderWidth:1,cornerRadius:8,padding:10,displayColors:true,callbacks:{label:ctx=>ctx.dataset.label+': '+fmtNum(ctx.parsed.y)}}},scales:{x:{ticks:{color:'#94a3b8',maxRotation:45,font:{size:10}},grid:{display:false}},y:{type:'linear',position:'left',title:{display:true,text:'Tokens',color:'#3b82f6',font:{size:11}},ticks:{color:'#94a3b8',callback:v=>fmtShort(v),font:{size:10}},grid:{color:'#f1f5f9'},border:{display:false}},y1:{type:'linear',position:'right',title:{display:true,text:'Messages',color:'#10b981',font:{size:11}},ticks:{color:'#94a3b8',callback:v=>fmtNum(v),font:{size:10}},grid:{display:false},border:{display:false}}},plugins:[{id:'trendH',beforeInit(chart){chart.canvas.parentNode.style.height='220px'}}]});
+  ]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:{labels:{usePointStyle:true,pointStyleWidth:8,padding:20,font:{size:11},color:'#64748b'}},tooltip:{backgroundColor:'#fff',titleColor:'#0f172a',bodyColor:'#64748b',borderColor:'#e2e8f0',borderWidth:1,cornerRadius:8,padding:10,displayColors:true,callbacks:{label:ctx=>ctx.dataset.label+': '+fmtNum(ctx.parsed.y)}}},scales:{x:{ticks:{color:'#94a3b8',maxRotation:45,font:{size:10}},grid:{display:false}},y:{type:'linear',position:'left',title:{display:true,text:'Tokens',color:'#3b82f6',font:{size:11}},ticks:{color:'#94a3b8',callback:v=>fmtShort(v),font:{size:10}},grid:{color:'#f1f5f9'},border:{display:false}},y1:{type:'linear',position:'right',title:{display:true,text:'Messages',color:'#10b981',font:{size:11}},ticks:{color:'#94a3b8',callback:v=>fmtNum(v),font:{size:10}},grid:{display:false},border:{display:false}}},plugins:[{id:'trendH',beforeInit(chart){chart.canvas.parentNode.style.height='220px'}}]}});
 
   const cCtx = document.getElementById('compositionChart').getContext('2d');
   compositionChart = new Chart(cCtx, {type:'bar',data:{labels:[],datasets:[{data:[],backgroundColor:['#3b82f6','#10b981','#8b5cf6','#f59e0b','#f43f5e'],borderWidth:0,borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#94a3b8',callback:v=>fmtShort(v),font:{size:9}},grid:{display:false},border:{display:false}},y:{ticks:{color:'#64748b',font:{size:10}},grid:{display:false},border:{display:false}}}}});
@@ -574,6 +655,13 @@ function initCharts() {
 }
 
 function updateUI(data) {
+  // v2.1: 错误响应处理
+  if (data.error) {
+    document.getElementById('headerSubtitle').textContent = 'Error: ' + data.message;
+    console.warn('Dashboard API error:', data.error, data.message);
+    return;
+  }
+
   const s = data.summary, m = data.meta;
   document.getElementById('headerSubtitle').textContent = (m.range==='all'?'All time':'Last '+m.range+' days')+' · '+m.first_day+' — '+m.last_day;
   document.getElementById('metaRange').textContent = m.range==='all'?'All':m.range+' days';
@@ -589,45 +677,76 @@ function updateUI(data) {
   document.getElementById('gaugeCacheHit').textContent = s.cache_hit_pct.toFixed(1)+'%';
   const infDenom = s.total||1;
   document.getElementById('gaugeInference').textContent = ((s.output+s.reasoning)/infDenom*100).toFixed(1)+'%';
-  trendChart.data.labels = data.trend.map(t=>t[0].slice(5));
-  trendChart.data.datasets[0].data = data.trend.map(t=>t[1].input+t[1].output+t[1].cache_read+t[1].cache_write+t[1].reasoning);
-  trendChart.data.datasets[1].data = data.trend.map(t=>t[1].messages||0);
+
+  // v2.1: 7天用小时粒度，其他用天粒度
+  var useHourly = (currentRange === 7);
+  document.getElementById('trendBadge').textContent = useHourly ? '小时趋势' : '每日趋势';
+
+  var trendData = useHourly ? (data.hour_trend || []) : (data.trend || []);
+  trendChart.data.labels = trendData.map(function(t) {
+    var key = t[0];
+    if (useHourly) {
+      // hour key format: "2026-05-31T14:00" → "05-31 14:00"
+      return key.slice(5, 10) + ' ' + key.slice(11, 16);
+    }
+    return key.slice(5); // day key: "2026-05-31" → "05-31"
+  });
+  trendChart.data.datasets[0].data = trendData.map(function(t) {
+    var d = t[1];
+    return useHourly ? (d.total || 0) : (d.input + d.output + d.cache_read + d.cache_write + d.reasoning);
+  });
+  // hour_trend 没有 messages 字段，7 天时不显示 messages 线
+  trendChart.data.datasets[1].data = useHourly ? [] : trendData.map(function(t) { return t[1].messages || 0; });
+  trendChart.data.datasets[1].hidden = useHourly;
   trendChart.update();
+
   compositionChart.data.labels = ['Input','Output','Cache Read','Cache Write','Reasoning'];
   compositionChart.data.datasets[0].data = [s.input,s.output,s.cache_read,s.cache_write,s.reasoning];
   compositionChart.update();
-  providerChart.data.labels = data.provider_distribution.map(p=>p.provider);
-  providerChart.data.datasets[0].data = data.provider_distribution.map(p=>p.total);
+  providerChart.data.labels = data.provider_distribution.map(function(p) { return p.provider; });
+  providerChart.data.datasets[0].data = data.provider_distribution.map(function(p) { return p.total; });
   providerChart.update();
-  document.getElementById('leaderboardBody').innerHTML = data.model_ranking.map((m,i)=>{
-    const cls = i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'';
+  document.getElementById('leaderboardBody').innerHTML = data.model_ranking.map(function(m, i) {
+    var cls = i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'';
     return '<tr class="'+cls+'"><td><span class="rank-badge">'+(i+1)+'</span></td><td><span class="model-name">'+shortModel(m.model)+'</span></td><td>'+fmtShort(m.total)+'</td><td>'+fmtCost(m.cost)+'</td><td>'+m.sessions+'</td></tr>';
   }).join('');
-  const crates = data.model_cache_rates||[];
-  cacheHitChart.data.labels = crates.map(c=>shortModel(c.model));
-  cacheHitChart.data.datasets[0].data = crates.map(c=>c.cache_hit_pct);
+  var crates = data.model_cache_rates||[];
+  cacheHitChart.data.labels = crates.map(function(c) { return shortModel(c.model); });
+  cacheHitChart.data.datasets[0].data = crates.map(function(c) { return c.cache_hit_pct; });
   cacheHitChart.update();
 }
 async function fetchData() {
-  try { const r = await fetch('/api/usage?range='+currentRange); if(r.ok) updateUI(await r.json()); } catch(e){}
+  try {
+    // v2.1: 传 "all" 而非 null，避免后端 int("null") 报错
+    var rangeParam = (currentRange === null) ? 'all' : currentRange;
+    var r = await fetch('/api/usage?range=' + rangeParam);
+    if (r.ok) {
+      updateUI(await r.json());
+    } else {
+      console.warn('API returned status:', r.status);
+    }
+  } catch(e) {
+    console.warn('Dashboard fetch failed:', e.message || e);
+  }
 }
 function connectSSE() {
-  const es = new EventSource('/api/events');
-  es.onmessage = () => fetchData();
-  es.onerror = () => es.close();
+  var es = new EventSource('/api/events');
+  es.onmessage = function() { fetchData(); };
+  es.onerror = function() { es.close(); };
 }
-document.querySelectorAll('.range-pill').forEach(btn=>{
-  btn.addEventListener('click',()=>{
-    document.querySelectorAll('.range-pill').forEach(b=>b.classList.remove('active'));
+document.querySelectorAll('.range-pill').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.range-pill').forEach(function(b) { b.classList.remove('active'); });
     btn.classList.add('active');
-    currentRange = btn.dataset.range==='all'?null:parseInt(btn.dataset.range);
+    // v2.1: "全部" 存 null，fetch 时统一翻译为 "all"
+    currentRange = btn.dataset.range === 'all' ? null : parseInt(btn.dataset.range, 10);
     fetchData();
   });
 });
 initCharts();
 fetchData();
 connectSSE();
-setInterval(fetchData, POLL_MS+1000);
+setInterval(fetchData, POLL_MS + 1000);
 </script>
 </body>
 </html>"""
@@ -692,19 +811,43 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/health":
             self._send_json({"ok": True})
         elif path == "/api/usage":
+            # v2.1: 兼容 all / null / 空字符串 / 未传
             range_val = params.get("range", [None])[0]
-            range_days = int(range_val) if range_val and range_val != "all" else None
-            stats = cached_stats(range_days)
-            self._send_json(stats)
+            if range_val and range_val not in ("all", "null", ""):
+                try:
+                    range_days = int(range_val)
+                except (ValueError, TypeError):
+                    range_days = None  # 无法解析 → 全部
+            else:
+                range_days = None  # all / null / 空 / 未传 → 全部
+
+            # v2.1: 错误处理 — DB 不存在等异常返回 JSON 错误而非 500
+            try:
+                stats = cached_stats(range_days)
+                self._send_json(stats)
+            except DatabaseError as e:
+                self._send_json({
+                    "error": "database_not_found",
+                    "message": str(e),
+                }, 500)
+            except Exception as e:
+                self._send_json({
+                    "error": "internal_error",
+                    "message": str(e),
+                }, 500)
         elif path == "/api/events":
-            self._send_sse()
+            try:
+                self._send_sse()
+            except Exception:
+                pass
         else:
-            self._send_json({"error": "not found"}, 404)
+            self._send_json({"error": "not_found", "message": "Unknown path"}, 404)
 
 
 def main():
-    print(f"  Hermes Token Dashboard v2")
+    print(f"  Hermes Token Dashboard v2.1")
     print(f"  Data source: {DB_PATH}")
+    print(f"  Timezone: UTC+8 (Beijing)")
     print(f"  → http://{HOST}:{PORT}")
     print(f"  Press Ctrl+C to stop\n")
     server = http.server.ThreadingHTTPServer((HOST, PORT), DashboardHandler)
