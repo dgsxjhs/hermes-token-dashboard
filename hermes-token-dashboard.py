@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes Token Dashboard v2.3
+Hermes Token Dashboard v2.4
 
 Local token usage dashboard for Hermes Agent.
 
@@ -16,7 +16,7 @@ Design:
     No Node.js, no Rust, no Python third-party dependencies.
     UTC+8 fixed timezone.
 
-v2.3: Code readability improvement — de-compressed Python and HTML/JS.
+v2.4: Frontend overhaul — Chinese default, fixed donut, manual refresh, empty data protection.
 """
 
 import sqlite3
@@ -596,7 +596,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hermes Token Dashboard v2.3</title>
+<title>Hermes Token 用量看板 v2.4</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
 <style>
 /* ═══ CSS Variables — Light Theme ═══ */
@@ -654,15 +654,24 @@ body {
 .dark .hero {
   background: linear-gradient(135deg, #1e293b, #1a1a2e, #1e293b);
 }
-.hero h1 { font-size: 22px; font-weight: 700; }
+.hero h1 { font-size: 22px; font-weight: 700; display: inline; }
 .hero .badge {
   font-size: 11px; font-weight: 600;
   padding: 3px 10px; border-radius: 10px;
   background: var(--primary-light); color: var(--primary);
+  vertical-align: middle; margin-left: 8px;
 }
 .hero-meta {
   display: flex; gap: 14px; flex-wrap: wrap;
   font-size: 12px; color: var(--text-muted); margin-top: 8px;
+}
+.hero-error {
+  background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
+  border-radius: 12px; padding: 20px 24px; margin-bottom: 14px;
+  font-size: 14px; text-align: center;
+}
+.dark .hero-error {
+  background: #450a0a; border-color: #7f1d1d; color: #fca5a5;
 }
 
 /* ═══ Controls Bar ═══ */
@@ -673,12 +682,23 @@ body {
   background: var(--card-bg); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow);
 }
+.ctrl-group {
+  display: flex; align-items: center; gap: 4px;
+}
+.ctrl-label {
+  font-size: 11px; color: var(--text-muted); font-weight: 600;
+  margin-right: 2px; white-space: nowrap;
+}
+.ctrl-sep {
+  width: 1px; height: 20px; background: var(--border); margin: 0 4px;
+}
 .ctrl-btn {
   padding: 5px 12px;
   border: 1px solid var(--border); background: transparent;
   color: var(--text-muted); border-radius: 7px;
   cursor: pointer; font-size: 12px; font-weight: 500;
 }
+.ctrl-btn:hover { background: var(--primary-light); color: var(--primary); }
 .ctrl-btn.active {
   background: var(--primary); color: #fff; border-color: var(--primary);
 }
@@ -686,6 +706,19 @@ body {
   padding: 5px 8px;
   border: 1px solid var(--border); border-radius: 7px;
   background: var(--card-bg); color: var(--text); font-size: 12px;
+}
+.ctrl-toggle {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 12px; color: var(--text-muted); cursor: pointer;
+  padding: 5px 10px; border: 1px solid var(--border);
+  border-radius: 7px; background: transparent; user-select: none;
+}
+.ctrl-toggle.on {
+  background: var(--emerald); color: #fff; border-color: var(--emerald);
+}
+.ctrl-toggle .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor;
 }
 
 /* ═══ Summary Cards ═══ */
@@ -721,6 +754,20 @@ body {
 .chart-card h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
 .chart-wrap { position: relative; }
 .chart-wrap canvas { width: 100%; }
+.chart-empty {
+  display: flex; align-items: center; justify-content: center;
+  height: 200px; color: var(--text-muted); font-size: 13px;
+}
+
+/* ═══ Donut Box — fixed square ═══ */
+.donut-box {
+  width: 260px; height: 260px;
+  max-width: 100%; margin: 0 auto;
+  position: relative;
+}
+.donut-box canvas {
+  width: 260px !important; height: 260px !important;
+}
 
 /* ═══ Footer ═══ */
 footer {
@@ -732,6 +779,8 @@ footer {
 @media (max-width: 768px) {
   .cards-row { grid-template-columns: repeat(2, 1fr); }
   .chart-row2, .chart-row3 { grid-template-columns: 1fr; }
+  .donut-box { width: 200px; height: 200px; }
+  .donut-box canvas { width: 200px !important; height: 200px !important; }
 }
 </style>
 </head>
@@ -739,72 +788,93 @@ footer {
 <div class="container">
 
 <!-- ═══ Hero Panel ═══ -->
-<div class="hero">
+<div class="hero" id="heroPanel">
   <div>
-    <h1 style="display:inline">Hermes Token Dashboard</h1>
-    <span class="badge">v2.3</span>
+    <h1>Hermes Token 用量看板</h1>
+    <span class="badge">v2.4</span>
   </div>
-  <div class="hero-meta">
-    <span id="hMeta">Loading...</span>
+  <div class="hero-meta" id="hMeta">
+    <span>数据源：state.db</span>
+    <span id="hRange">时间范围：加载中…</span>
+    <span id="hUpdated">更新时间：—</span>
+    <span>UTC+8</span>
   </div>
+</div>
+
+<!-- ═══ Error Banner (hidden by default) ═══ -->
+<div class="hero-error" id="errorBanner" style="display:none">
+  ⚠ 读取 Hermes 数据失败，请确认 ~/.hermes/state.db 存在
 </div>
 
 <!-- ═══ Controls Bar ═══ -->
 <div class="controls">
+  <!-- Time Range -->
+  <div class="ctrl-group">
+    <span class="ctrl-label">时间</span>
+    <button class="ctrl-btn" data-range="7">7天</button>
+    <button class="ctrl-btn active" data-range="30">30天</button>
+    <button class="ctrl-btn" data-range="90">90天</button>
+    <button class="ctrl-btn" data-range="180">180天</button>
+    <button class="ctrl-btn" data-range="365">365天</button>
+    <button class="ctrl-btn" data-range="all">全部</button>
+  </div>
 
-  <!-- Time Range Buttons -->
-  <button class="ctrl-btn active" data-range="30">30d</button>
-  <button class="ctrl-btn" data-range="7">7d</button>
-  <button class="ctrl-btn" data-range="90">90d</button>
-  <button class="ctrl-btn" data-range="180">180d</button>
-  <button class="ctrl-btn" data-range="365">365d</button>
-  <button class="ctrl-btn" data-range="all">All</button>
+  <div class="ctrl-sep"></div>
 
   <!-- Metric Selector -->
-  <select class="ctrl-select" id="metricSelect">
-    <option value="total">Total</option>
-    <option value="active">Active</option>
-    <option value="input">Input</option>
-    <option value="output">Output</option>
-    <option value="reasoning">Reasoning</option>
-    <option value="cache_read">Cache Read</option>
-    <option value="cache_write">Cache Write</option>
-    <option value="cache_hit_rate">Cache Hit%</option>
-    <option value="user_message_count">Messages</option>
-    <option value="runtime_dedup">Runtime</option>
-    <option value="estimated_cost">Cost</option>
-  </select>
+  <div class="ctrl-group">
+    <span class="ctrl-label">指标</span>
+    <select class="ctrl-select" id="metricSelect">
+      <option value="total">总 Token</option>
+      <option value="active">活跃 Token</option>
+      <option value="input">输入</option>
+      <option value="output">输出</option>
+      <option value="reasoning">推理</option>
+      <option value="cache_read">缓存读取</option>
+      <option value="cache_write">缓存写入</option>
+      <option value="cache_hit_rate">缓存命中率</option>
+      <option value="user_message_count">消息数</option>
+      <option value="runtime_dedup">运行时长</option>
+      <option value="estimated_cost">估算成本</option>
+    </select>
+  </div>
+
+  <div class="ctrl-sep"></div>
 
   <!-- Utility Buttons -->
-  <button class="ctrl-btn" onclick="fetchData()" title="Refresh">↻</button>
-  <button class="ctrl-btn" id="btnTheme" onclick="toggleTheme()" title="Toggle theme">☀</button>
-  <button class="ctrl-btn" id="btnLang" onclick="toggleLang()" title="Toggle language">EN</button>
+  <button class="ctrl-btn" onclick="fetchData()" title="手动刷新" id="btnRefresh">↻ 刷新</button>
+
+  <button class="ctrl-toggle" id="btnAuto" onclick="toggleAuto()" title="自动刷新（30秒）">
+    <span class="dot"></span> 自动
+  </button>
+
+  <button class="ctrl-btn" id="btnTheme" onclick="toggleTheme()" title="切换主题">☀</button>
 </div>
 
 <!-- ═══ Summary Cards ═══ -->
 <div class="cards-row">
   <div class="stat-card">
-    <div class="lbl">Today</div>
+    <div class="lbl">今日 / 最新</div>
     <div class="val" id="cToday">—</div>
     <div class="sub" id="cTodaySub">—</div>
   </div>
   <div class="stat-card">
-    <div class="lbl">Total</div>
+    <div class="lbl">总计</div>
     <div class="val" id="cTotal">—</div>
     <div class="sub" id="cTotalSub">—</div>
   </div>
   <div class="stat-card">
-    <div class="lbl">Daily Avg</div>
+    <div class="lbl">日均</div>
     <div class="val" id="cAvg">—</div>
     <div class="sub" id="cAvgSub">—</div>
   </div>
   <div class="stat-card">
-    <div class="lbl">Peak</div>
+    <div class="lbl">峰值</div>
     <div class="val" id="cPeak">—</div>
     <div class="sub" id="cPeakSub">—</div>
   </div>
   <div class="stat-card">
-    <div class="lbl" id="cUtilLbl">Messages</div>
+    <div class="lbl" id="cUtilLbl">消息数</div>
     <div class="val" id="cUtil">—</div>
     <div class="sub" id="cUtilSub">—</div>
   </div>
@@ -813,75 +883,71 @@ footer {
 <!-- ═══ Chart Row: Trend + Breakdown ═══ -->
 <div class="chart-row2">
   <div class="chart-card">
-    <h3>TREND</h3>
-    <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
+    <h3>📈 趋势图</h3>
+    <div class="chart-wrap" style="height:220px"><canvas id="trendChart"></canvas></div>
   </div>
   <div class="chart-card">
-    <h3>BREAKDOWN</h3>
-    <div id="gvCache" style="font-size:24px;font-weight:700;color:var(--purple);text-align:center">—</div>
-    <div style="font-size:11px;text-align:center;color:var(--text-muted)">Cache Ratio</div>
-    <div id="gvReason" style="font-size:24px;font-weight:700;color:var(--amber);text-align:center;margin-top:8px">—</div>
-    <div style="font-size:11px;text-align:center;color:var(--text-muted)">Reasoning Ratio</div>
+    <h3>📊 Token 构成</h3>
+    <div id="breakdownEmpty" class="chart-empty" style="display:none">暂无数据</div>
+    <div id="breakdownContent">
+      <div id="gvCache" style="font-size:24px;font-weight:700;color:var(--purple);text-align:center">—</div>
+      <div style="font-size:11px;text-align:center;color:var(--text-muted)">缓存命中率</div>
+      <div id="gvReason" style="font-size:24px;font-weight:700;color:var(--amber);text-align:center;margin-top:8px">—</div>
+      <div style="font-size:11px;text-align:center;color:var(--text-muted)">推理占比</div>
+    </div>
   </div>
 </div>
 
-<!-- ═══ Chart Row: Leaderboard + Distribution ═══ -->
+<!-- ═══ Chart Row: Model Ranking + Provider Distribution ═══ -->
 <div class="chart-row3">
   <div class="chart-card">
-    <h3>LEADERBOARD</h3>
+    <h3>🏆 模型排行</h3>
+    <div id="modelEmpty" class="chart-empty" style="display:none">暂无数据</div>
     <div class="chart-wrap" style="height:260px"><canvas id="modelChart"></canvas></div>
   </div>
   <div class="chart-card">
-    <h3>DISTRIBUTION</h3>
-    <div class="chart-wrap" style="height:260px; max-width:260px; margin:0 auto"><canvas id="provChart"></canvas></div>
+    <h3>🔵 供应商分布</h3>
+    <div id="provEmpty" class="chart-empty" style="display:none">暂无数据</div>
+    <div class="donut-box">
+      <canvas id="provChart"></canvas>
+    </div>
   </div>
 </div>
 
 <!-- ═══ Cache Hit Rate Trend ═══ -->
 <div class="chart-card" style="margin-bottom:14px">
-  <h3>PERFORMANCE</h3>
+  <h3>📉 缓存命中率趋势</h3>
+  <div id="chTrendEmpty" class="chart-empty" style="display:none">暂无数据</div>
   <div class="chart-wrap" style="height:260px"><canvas id="chTrendChart"></canvas></div>
 </div>
 
-<footer>Hermes Token Dashboard · v2.3 · UTC+8</footer>
+<footer>Hermes Token 用量看板 · v2.4 · UTC+8</footer>
 </div>
 
 <script>
 // ═══════════════════════════════════════════════
 // Global State
 // ═══════════════════════════════════════════════
-var lang = 'zh';
 var metric = 'total';
 var currentRange = 30;
 var lastData = null;
 var soloCacheKey = null;
+var autoRefresh = false;
+var autoTimer = null;
 
 // Chart instances
 var trendChart, provChart, modelChart, chTrendChart;
 
 // ═══════════════════════════════════════════════
-// i18n Dictionaries
+// i18n — Metric Labels (Chinese default)
 // ═══════════════════════════════════════════════
-var L = {
-  zh: { d: '天', all: '全部', per_day: '/天', msg: '消息', tot: '总量' },
-  en: { d: 'd', all: 'All', per_day: '/day', msg: 'Messages', tot: 'Total' }
+var ML = {
+  total: '总 Token', active: '活跃 Token', input: '输入', output: '输出',
+  reasoning: '推理', cache_read: '缓存读取', cache_write: '缓存写入',
+  cache_hit_rate: '缓存命中率', user_message_count: '消息数',
+  runtime_dedup: '运行时长', estimated_cost: '估算成本'
 };
-
-// ═══════════════════════════════════════════════
-// i18n Helpers
-// ═══════════════════════════════════════════════
-function t(k) { return (L[lang] || L.zh)[k] || k; }
-
-function setLang(l) {
-  lang = l;
-  document.getElementById('btnLang').textContent = (l === 'zh') ? 'EN' : '中文';
-  try { localStorage.setItem('dash-lang', l); } catch (e) {}
-  if (lastData) updateUI(lastData);
-}
-
-function toggleLang() {
-  setLang(lang === 'zh' ? 'en' : 'zh');
-}
+function ml(m) { return ML[m] || m; }
 
 // ═══════════════════════════════════════════════
 // Theme Helpers
@@ -891,9 +957,24 @@ function setTheme(dark) {
   document.getElementById('btnTheme').textContent = dark ? '☾' : '☀';
   try { localStorage.setItem('dash-theme', dark ? 'dark' : 'light'); } catch (e) {}
 }
-
 function toggleTheme() {
   setTheme(!document.documentElement.classList.contains('dark'));
+}
+
+// ═══════════════════════════════════════════════
+// Auto Refresh
+// ═══════════════════════════════════════════════
+function toggleAuto() {
+  autoRefresh = !autoRefresh;
+  var btn = document.getElementById('btnAuto');
+  btn.classList.toggle('on', autoRefresh);
+  try { localStorage.setItem('dash-auto', autoRefresh ? '1' : '0'); } catch (e) {}
+  if (autoRefresh) {
+    autoTimer = setInterval(fetchData, 30000);
+  } else {
+    clearInterval(autoTimer);
+    autoTimer = null;
+  }
 }
 
 // ═══════════════════════════════════════════════
@@ -903,7 +984,6 @@ function fm(v) {
   if (v == null || isNaN(v)) return '—';
   return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
 }
-
 function fs(v) {
   if (v == null || isNaN(v)) return '—';
   if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
@@ -911,12 +991,10 @@ function fs(v) {
   if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
   return v.toLocaleString();
 }
-
 function fc(v) {
   if (v == null) return '—';
   return '$' + v.toFixed(2);
 }
-
 function sm(n) {
   if (!n) return '?';
   var s = String(n);
@@ -936,8 +1014,8 @@ function getVal(entry, m) {
   if (m === 'estimated_cost') return entry.estimated_cost || 0;
   return entry[m] || 0;
 }
-
 function fv(v, m) {
+  if (v == null || isNaN(v)) return '—';
   if (m === 'cache_hit_rate') return v.toFixed(1) + '%';
   if (m === 'estimated_cost') return fc(v);
   if (m === 'runtime_dedup') {
@@ -946,11 +1024,6 @@ function fv(v, m) {
     return h + 'h ' + mi + 'm';
   }
   return fs(v);
-}
-
-function ml(m) {
-  if (m === 'estimated_cost') return 'Cost';
-  return m.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
 }
 
 // ═══════════════════════════════════════════════
@@ -963,7 +1036,7 @@ var PM_COLORS = [
 ];
 
 // ═══════════════════════════════════════════════
-// Metric-Aware Card Helpers (v2.2.3)
+// Metric-Aware Card Helpers
 // ═══════════════════════════════════════════════
 
 function getTodayStr() {
@@ -1021,8 +1094,6 @@ function groupByDay(days) {
 
 function calcAvg(days, metric) {
   if (days.length === 0) return 0;
-
-  // cache_hit_rate: use total formula, not simple average
   if (metric === 'cache_hit_rate') {
     var ti = 0, tc = 0;
     for (var i = 0; i < days.length; i++) {
@@ -1031,10 +1102,8 @@ function calcAvg(days, metric) {
     }
     return (ti + tc) > 0 ? tc / (ti + tc) * 100 : 0;
   }
-
   var is7 = currentRange === 7;
   if (is7) {
-    // 7-day hourly: group by day, then average
     var groups = groupByDay(days);
     var sum = 0, count = 0;
     for (var dk in groups) {
@@ -1046,8 +1115,6 @@ function calcAvg(days, metric) {
     }
     return count > 0 ? sum / count : 0;
   }
-
-  // Daily: simple average
   var total = 0;
   for (var i = 0; i < days.length; i++) total += getVal(days[i], metric);
   return total / days.length;
@@ -1055,20 +1122,16 @@ function calcAvg(days, metric) {
 
 function findPeak(days, metric) {
   if (days.length === 0) return { value: 0, date: '—' };
-
   var best = days[0];
   var bestVal = getVal(best, metric);
-
   for (var i = 1; i < days.length; i++) {
     var v = getVal(days[i], metric);
     if (v > bestVal) { bestVal = v; best = days[i]; }
   }
-
   if (metric === 'cache_hit_rate') {
     var cd = best.input + best.cache_read;
     bestVal = cd > 0 ? best.cache_read / cd * 100 : 0;
   }
-
   return { value: bestVal, date: best.date };
 }
 
@@ -1078,9 +1141,9 @@ function findPeak(days, metric) {
 
 function setCacheSolo(key) {
   if (soloCacheKey === key) {
-    soloCacheKey = null;  // exit solo
+    soloCacheKey = null;
   } else {
-    soloCacheKey = key;   // enter solo
+    soloCacheKey = key;
   }
   chTrendChart.data.datasets.forEach(function(ds, i) {
     if (soloCacheKey === null) {
@@ -1090,6 +1153,19 @@ function setCacheSolo(key) {
     }
   });
   chTrendChart.update();
+}
+
+// ═══════════════════════════════════════════════
+// Empty Data Guards
+// ═══════════════════════════════════════════════
+
+function showEmpty(id, show) {
+  var el = document.getElementById(id);
+  if (el) el.style.display = show ? 'flex' : 'none';
+}
+function showCanvas(id, show) {
+  var el = document.getElementById(id);
+  if (el) el.style.display = show ? '' : 'none';
 }
 
 // ═══════════════════════════════════════════════
@@ -1105,26 +1181,25 @@ function initCharts() {
       data: {
         labels: [],
         datasets: [
-          { label: '', data: [], borderColor: '#3b82f6', borderWidth: 2, yAxisID: 'y', tension: 0.3, pointRadius: 0 },
-          { label: '', data: [], borderColor: '#10b981', borderDash: [5, 3], borderWidth: 1.5, yAxisID: 'y1', tension: 0.3, pointRadius: 0 }
+          { label: '', data: [], borderColor: '#3b82f6', borderWidth: 2, yAxisID: 'y', tension: 0.3, pointRadius: 0, fill: false },
+          { label: '', data: [], borderColor: '#10b981', borderDash: [5, 3], borderWidth: 1.5, yAxisID: 'y1', tension: 0.3, pointRadius: 0, fill: false }
         ]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
         scales: {
           x: { grid: { display: false } },
-          y: {},
-          y1: { position: 'right', grid: { display: false } }
+          y: { beginAtZero: true },
+          y1: { position: 'right', grid: { display: false }, beginAtZero: true }
         },
-        plugins: [
-          { id: 'th', beforeInit: function(c) { c.canvas.parentNode.style.height = '220px'; } }
-        ]
+        plugins: { legend: { labels: { font: { size: 11 } } } }
       }
     }
   );
 
-  // Provider donut chart
+  // Provider donut chart — FIXED: responsive:false + explicit size
   provChart = new Chart(
     document.getElementById('provChart').getContext('2d'),
     {
@@ -1137,10 +1212,12 @@ function initCharts() {
         }]
       },
       options: {
-        cutout: '60%',
-        maintainAspectRatio: true,
-        aspectRatio: 1,
-        plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } }
+        responsive: false,
+        maintainAspectRatio: false,
+        cutout: '62%',
+        plugins: {
+          legend: { position: 'bottom', labels: { font: { size: 10 }, padding: 8 } }
+        }
       }
     }
   );
@@ -1162,7 +1239,8 @@ function initCharts() {
         indexAxis: 'y',
         responsive: true,
         maintainAspectRatio: false,
-        plugins: { legend: { display: false } }
+        plugins: { legend: { display: false } },
+        scales: { x: { beginAtZero: true } }
       }
     }
   );
@@ -1176,6 +1254,7 @@ function initCharts() {
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
         plugins: {
           legend: {
             position: 'bottom',
@@ -1189,10 +1268,7 @@ function initCharts() {
             ticks: { callback: function(v) { return v + '%'; } }
           }
         }
-      },
-      plugins: [
-        { id: 'cth', beforeInit: function(c) { c.canvas.parentNode.style.height = '260px'; } }
-      ]
+      }
     }
   );
 }
@@ -1203,19 +1279,28 @@ function initCharts() {
 
 function updateUI(data) {
   lastData = data;
-  if (data.error) return;
+
+  // Show/hide error banner
+  var errBanner = document.getElementById('errorBanner');
+  var heroPanel = document.getElementById('heroPanel');
+  if (data.error) {
+    errBanner.style.display = 'block';
+    heroPanel.style.display = 'none';
+    return;
+  }
+  errBanner.style.display = 'none';
+  heroPanel.style.display = '';
 
   var s = data.summary;
   var m = data.meta;
   var d = data.days || [];
 
   // Hero metadata
-  document.getElementById('hMeta').textContent =
-    'Range: ' + (m.range === 'all' ? t('all') : m.range + ' ' + t('d'))
-    + ' · ' + m.first_day + ' — ' + m.last_day
-    + ' · Sessions: ' + s.sessions
-    + ' · Updated: ' + new Date().toLocaleTimeString()
-    + ' · UTC+8';
+  document.getElementById('hRange').textContent =
+    '时间范围：' + (m.range === 'all' ? '全部' : m.range + ' 天')
+    + '（' + m.first_day + ' — ' + m.last_day + '）';
+  document.getElementById('hUpdated').textContent =
+    '更新时间：' + new Date().toLocaleTimeString();
 
   // --- Summary Cards (metric-aware from days) ---
 
@@ -1226,32 +1311,32 @@ function updateUI(data) {
     tv != null ? tv : getLatestValue(d, metric), metric
   );
   document.getElementById('cTodaySub').textContent =
-    (isLatest || tv == null ? 'Latest ' : '') + ml(metric);
+    (isLatest || tv == null ? '最新 ' : '今日 ') + ml(metric);
 
   // Total
   var totalV = 0;
   for (var i = 0; i < d.length; i++) totalV += getVal(d[i], metric);
   if (metric === 'cache_hit_rate') totalV = calcAvg(d, metric);
   document.getElementById('cTotal').textContent = fv(totalV, metric);
-  document.getElementById('cTotalSub').textContent = 'Period ' + ml(metric);
+  document.getElementById('cTotalSub').textContent = '期间 ' + ml(metric);
 
   // Daily Avg
   var av = calcAvg(d, metric);
   document.getElementById('cAvg').textContent = fv(av, metric);
-  document.getElementById('cAvgSub').textContent = t('per_day');
+  document.getElementById('cAvgSub').textContent = '每天';
 
   // Peak
   var pk = findPeak(d, metric);
   document.getElementById('cPeak').textContent = fv(pk.value, metric);
-  document.getElementById('cPeakSub').textContent = 'on ' + pk.date;
+  document.getElementById('cPeakSub').textContent = '峰值日期 ' + pk.date;
 
   // Utility card (Messages ↔ Total Tokens)
   var isMsg = (metric === 'user_message_count');
-  document.getElementById('cUtilLbl').textContent = isMsg ? t('tot') : t('msg');
+  document.getElementById('cUtilLbl').textContent = isMsg ? '总 Token' : '消息数';
   document.getElementById('cUtil').textContent = isMsg ? fs(s.total) : fm(s.user_message_count);
   document.getElementById('cUtilSub').textContent = isMsg
-    ? 'Period sum'
-    : fm(s.messages_per_day) + ' ' + t('per_day');
+    ? '期间累计'
+    : fm(s.messages_per_day) + ' 条/天';
 
   // --- Trend Chart ---
   var is7 = currentRange === 7;
@@ -1265,84 +1350,100 @@ function updateUI(data) {
   trendChart.data.datasets[1].data = d.map(function(x) {
     return metric === 'user_message_count' ? x.total : x.user_message_count;
   });
-  trendChart.data.datasets[1].label = metric === 'user_message_count' ? t('tot') : t('msg');
+  trendChart.data.datasets[1].label = metric === 'user_message_count' ? '总 Token' : '消息数';
   trendChart.update();
 
   // --- Breakdown Gauges ---
   var chDenom = s.input + s.cache_read;
   document.getElementById('gvCache').textContent =
     (chDenom > 0 ? (s.cache_read / chDenom * 100).toFixed(1) : '0.0') + '%';
-
   var outDenom = s.output + s.reasoning;
   document.getElementById('gvReason').textContent =
     (outDenom > 0 ? (s.reasoning / outDenom * 100).toFixed(1) : '0.0') + '%';
 
-  // --- Provider Distribution (sorted by current metric) ---
-  var pv = (data.providers || []).slice();
-  pv.sort(function(a, b) { return getVal(b, metric) - getVal(a, metric); });
-  var topP = pv.slice(0, 6);
-  var provOthers = 0;
-  pv.slice(6).forEach(function(p) { provOthers += getVal(p, metric); });
-
-  provChart.data.labels = topP.map(function(p) { return p.name; }).concat(provOthers > 0 ? ['Other'] : []);
-  provChart.data.datasets[0].data = topP.map(function(p) { return getVal(p, metric); }).concat(provOthers > 0 ? [provOthers] : []);
-  provChart.update();
-
-  // --- Model Ranking (sorted by current metric) ---
+  // --- Model Ranking (empty guard) ---
   var md = (data.models || []).slice();
-  md.sort(function(a, b) { return getVal(b, metric) - getVal(a, metric); });
-  var topM = md.slice(0, 8);
-  modelChart.data.labels = topM.map(function(m) { return sm(m.name); });
-  modelChart.data.datasets[0].data = topM.map(function(m) { return getVal(m, metric); });
-  modelChart.update();
-
-  // --- Cache Hit Rate Trend (solo mode + enhanced tooltip) ---
-  var pmts = data.provider_model_trends || [];
-  if (pmts.length > 0) {
-    chTrendChart.data.labels = pmts[0].days.map(function(d) { return d.date.slice(5); });
+  if (md.length > 0) {
+    showEmpty('modelEmpty', false);
+    showCanvas('modelChart', true);
+    md.sort(function(a, b) { return getVal(b, metric) - getVal(a, metric); });
+    var topM = md.slice(0, 8);
+    modelChart.data.labels = topM.map(function(m) { return sm(m.name); });
+    modelChart.data.datasets[0].data = topM.map(function(m) { return getVal(m, metric); });
+    modelChart.update();
+  } else {
+    showEmpty('modelEmpty', true);
+    showCanvas('modelChart', false);
   }
 
-  soloCacheKey = null;
+  // --- Provider Distribution (sorted by current metric, empty guard) ---
+  var pv = (data.providers || []).slice();
+  if (pv.length > 0) {
+    showEmpty('provEmpty', false);
+    showCanvas('provChart', true);
+    pv.sort(function(a, b) { return getVal(b, metric) - getVal(a, metric); });
+    var topP = pv.slice(0, 6);
+    var provOthers = 0;
+    pv.slice(6).forEach(function(p) { provOthers += getVal(p, metric); });
+    provChart.data.labels = topP.map(function(p) { return p.name; }).concat(provOthers > 0 ? ['其他'] : []);
+    provChart.data.datasets[0].data = topP.map(function(p) { return getVal(p, metric); }).concat(provOthers > 0 ? [provOthers] : []);
+    provChart.update();
+  } else {
+    showEmpty('provEmpty', true);
+    showCanvas('provChart', false);
+  }
 
-  chTrendChart.data.datasets = pmts.map(function(pmt, i) {
-    return {
-      label: sm(pmt.provider) + '/' + sm(pmt.model),
-      data: pmt.days.map(function(d) { return d.cache_hit_rate || 0; }),
-      borderColor: PM_COLORS[i % 12],
-      backgroundColor: PM_COLORS[i % 12],
-      tension: 0.3,
-      pointRadius: 0,
-      borderWidth: 2,
-      inputData: pmt.days.map(function(d) { return d.input || 0; }),
-      cacheReadData: pmt.days.map(function(d) { return d.cache_read || 0; }),
-      cacheWriteData: pmt.days.map(function(d) { return d.cache_write || 0; })
+  // --- Cache Hit Rate Trend (solo mode + enhanced tooltip, empty guard) ---
+  var pmts = data.provider_model_trends || [];
+  if (pmts.length > 0 && pmts[0].days && pmts[0].days.length > 0) {
+    showEmpty('chTrendEmpty', false);
+    showCanvas('chTrendChart', true);
+    chTrendChart.data.labels = pmts[0].days.map(function(d) { return d.date.slice(5); });
+
+    soloCacheKey = null;
+
+    chTrendChart.data.datasets = pmts.map(function(pmt, i) {
+      return {
+        label: sm(pmt.provider) + '/' + sm(pmt.model),
+        data: pmt.days.map(function(d) { return d.cache_hit_rate || 0; }),
+        borderColor: PM_COLORS[i % 12],
+        backgroundColor: PM_COLORS[i % 12],
+        tension: 0.3,
+        pointRadius: 0,
+        borderWidth: 2,
+        inputData: pmt.days.map(function(d) { return d.input || 0; }),
+        cacheReadData: pmt.days.map(function(d) { return d.cache_read || 0; }),
+        cacheWriteData: pmt.days.map(function(d) { return d.cache_write || 0; })
+      };
+    });
+
+    // Solo mode legend handler
+    chTrendChart.options.plugins.legend.onClick = function(e, item, legend) {
+      if (!item || item.datasetIndex === undefined) return;
+      setCacheSolo(item.datasetIndex);
     };
-  });
 
-  // Solo mode legend handler
-  chTrendChart.options.plugins.legend.onClick = function(e, item, legend) {
-    if (!item || item.datasetIndex === undefined) return;
-    setCacheSolo(item.datasetIndex);
-  };
-
-  // Enhanced tooltip
-  chTrendChart.options.plugins.tooltip = {
-    callbacks: {
-      title: function(items) { return items[0] ? items[0].label : ''; },
-      label: function(ctx) {
-        var ds = ctx.dataset;
-        var idx = ctx.dataIndex;
-        return [
-          'Cache Hit: ' + ctx.parsed.y.toFixed(1) + '%',
-          'Input: ' + fs(ds.inputData ? ds.inputData[idx] : 0),
-          'Cache Read: ' + fs(ds.cacheReadData ? ds.cacheReadData[idx] : 0),
-          'Cache Write: ' + fs(ds.cacheWriteData ? ds.cacheWriteData[idx] : 0)
-        ];
+    // Enhanced tooltip
+    chTrendChart.options.plugins.tooltip = {
+      callbacks: {
+        title: function(items) { return items[0] ? items[0].label : ''; },
+        label: function(ctx) {
+          var ds = ctx.dataset;
+          var idx = ctx.dataIndex;
+          return [
+            '缓存命中: ' + ctx.parsed.y.toFixed(1) + '%',
+            '输入: ' + fs(ds.inputData ? ds.inputData[idx] : 0),
+            '缓存读取: ' + fs(ds.cacheReadData ? ds.cacheReadData[idx] : 0),
+            '缓存写入: ' + fs(ds.cacheWriteData ? ds.cacheWriteData[idx] : 0)
+          ];
+        }
       }
-    }
-  };
-
-  chTrendChart.update();
+    };
+    chTrendChart.update();
+  } else {
+    showEmpty('chTrendEmpty', true);
+    showCanvas('chTrendChart', false);
+  }
 }
 
 // ═══════════════════════════════════════════════
@@ -1353,8 +1454,15 @@ async function fetchData() {
   try {
     var rp = (currentRange === null) ? 'all' : currentRange;
     var r = await fetch('/api/usage?range=' + rp);
-    if (r.ok) updateUI(await r.json());
-  } catch (e) {}
+    if (r.ok) {
+      var data = await r.json();
+      updateUI(data);
+    } else {
+      updateUI({ error: true, message: 'HTTP ' + r.status });
+    }
+  } catch (e) {
+    updateUI({ error: true, message: e.message });
+  }
 }
 
 // ═══════════════════════════════════════════════
@@ -1362,14 +1470,19 @@ async function fetchData() {
 // ═══════════════════════════════════════════════
 
 (function() {
-  // Restore language
-  try { var sl = localStorage.getItem('dash-lang'); if (sl) lang = sl; } catch (e) {}
-  setLang(lang);
-
   // Restore theme
   try {
     var st = localStorage.getItem('dash-theme');
     if (st === 'dark') setTheme(true);
+  } catch (e) {}
+
+  // Restore auto refresh
+  try {
+    var sa = localStorage.getItem('dash-auto');
+    if (sa === '1') {
+      autoRefresh = true;
+      document.getElementById('btnAuto').classList.add('on');
+    }
   } catch (e) {}
 
   // Time range button listeners
@@ -1390,14 +1503,19 @@ async function fetchData() {
     if (lastData) updateUI(lastData);
   });
 
-  // Initialize and start
+  // Initialize charts and load data
   initCharts();
   fetchData();
-  setInterval(fetchData, 4000);
+
+  // Start auto-refresh if enabled
+  if (autoRefresh) {
+    autoTimer = setInterval(fetchData, 30000);
+  }
 })();
 </script>
 </body>
 </html>"""
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1506,7 +1624,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
 def main():
     """Start the dashboard HTTP server."""
-    print("  Hermes Token Dashboard v2.3")
+    print("  Hermes Token Dashboard v2.4")
     print(f"  Data source: {DB_PATH}")
     print(f"  Timezone:   UTC+8")
     print(f"  Listening:  http://{HOST}:{PORT}")
