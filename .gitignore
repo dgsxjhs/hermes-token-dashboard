@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
+
+state.db
+state.db-wal
+state.db-shm

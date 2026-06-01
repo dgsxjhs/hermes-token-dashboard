@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes Token Dashboard v2.4
+Hermes Token Dashboard v2.5
 
 Local token usage dashboard for Hermes Agent.
 
@@ -596,7 +596,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hermes Token 用量看板 v2.4</title>
+<title>Hermes Token 用量看板 v2.5</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
 <style>
 /* ═══ CSS Variables — Light Theme ═══ */
@@ -609,11 +609,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
   --primary: #3b82f6;
   --primary-light: #dbeafe;
   --emerald: #10b981;
+  --emerald-light: #d1fae5;
   --amber: #f59e0b;
+  --amber-light: #fef3c7;
   --purple: #8b5cf6;
   --rose: #f43f5e;
   --radius: 12px;
-  --shadow: 0 1px 2px rgba(0,0,0,0.03);
+  --radius-lg: 16px;
+  --shadow: 0 1px 3px rgba(0,0,0,0.04);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.06);
 }
 
 /* ═══ Dark Theme Overrides ═══ */
@@ -626,10 +630,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
   --primary: #60a5fa;
   --primary-light: #1e3a5f;
   --emerald: #34d399;
+  --emerald-light: #064e3b;
   --amber: #fbbf24;
+  --amber-light: #78350f;
   --purple: #a78bfa;
   --rose: #fb7185;
-  --shadow: 0 1px 2px rgba(0,0,0,0.2);
+  --shadow: 0 1px 3px rgba(0,0,0,0.2);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.3);
 }
 
 /* ═══ Reset & Base ═══ */
@@ -640,34 +647,92 @@ body {
   color: var(--text);
   min-height: 100vh;
 }
-.container { max-width: 1600px; margin: 0 auto; padding: 16px 24px; }
+.container { max-width: 1440px; margin: 0 auto; padding: 20px 24px; }
 
 /* ═══ Hero Panel ═══ */
 .hero {
-  background: linear-gradient(135deg, #eff6ff, #f5f3ff, #f0fdf4);
+  background: linear-gradient(135deg, #eff6ff 0%, #f5f3ff 50%, #f0fdf4 100%);
   border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 20px 24px;
-  margin-bottom: 14px;
-  box-shadow: var(--shadow);
+  border-radius: var(--radius-lg);
+  padding: 24px 28px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow-md);
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
 }
 .dark .hero {
-  background: linear-gradient(135deg, #1e293b, #1a1a2e, #1e293b);
+  background: linear-gradient(135deg, #1e293b 0%, #1a1a2e 50%, #1e293b 100%);
 }
-.hero h1 { font-size: 22px; font-weight: 700; display: inline; }
-.hero .badge {
-  font-size: 11px; font-weight: 600;
-  padding: 3px 10px; border-radius: 10px;
-  background: var(--primary-light); color: var(--primary);
-  vertical-align: middle; margin-left: 8px;
+.hero-left { flex: 1; min-width: 0; }
+.hero-left h1 {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 4px;
 }
-.hero-meta {
-  display: flex; gap: 14px; flex-wrap: wrap;
-  font-size: 12px; color: var(--text-muted); margin-top: 8px;
+.hero-left .subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
 }
+.hero-left .badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  padding: 3px 10px;
+  border-radius: 10px;
+  background: var(--primary-light);
+  color: var(--primary);
+  margin-bottom: 8px;
+}
+.hero-left .meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.hero-left .meta .dot-live {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--emerald);
+  display: inline-block;
+}
+.hero-right {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  min-width: 320px;
+}
+.hero-info-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: var(--shadow);
+}
+.hero-info-card .hcard-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.hero-info-card .hcard-value {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.hero-info-card .hcard-value.small {
+  font-size: 13px;
+}
+
+/* ═══ Error Banner ═══ */
 .hero-error {
   background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
-  border-radius: 12px; padding: 20px 24px; margin-bottom: 14px;
+  border-radius: var(--radius); padding: 20px 24px; margin-bottom: 14px;
   font-size: 14px; text-align: center;
 }
 .dark .hero-error {
@@ -676,14 +741,24 @@ body {
 
 /* ═══ Controls Bar ═══ */
 .controls {
-  display: flex; align-items: center; gap: 6px;
-  margin-bottom: 14px; flex-wrap: wrap;
-  padding: 6px 10px;
-  background: var(--card-bg); border: 1px solid var(--border);
-  border-radius: var(--radius); box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  flex-wrap: wrap;
+  gap: 8px;
 }
+.ctrl-left { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.ctrl-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .ctrl-group {
-  display: flex; align-items: center; gap: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 .ctrl-label {
   font-size: 11px; color: var(--text-muted); font-weight: 600;
@@ -697,6 +772,7 @@ body {
   border: 1px solid var(--border); background: transparent;
   color: var(--text-muted); border-radius: 7px;
   cursor: pointer; font-size: 12px; font-weight: 500;
+  transition: all 0.15s;
 }
 .ctrl-btn:hover { background: var(--primary-light); color: var(--primary); }
 .ctrl-btn.active {
@@ -724,7 +800,7 @@ body {
 /* ═══ Summary Cards ═══ */
 .cards-row {
   display: grid; grid-template-columns: repeat(5, 1fr);
-  gap: 10px; margin-bottom: 14px;
+  gap: 10px; margin-bottom: 16px;
 }
 .stat-card {
   background: var(--card-bg); border: 1px solid var(--border);
@@ -738,20 +814,41 @@ body {
 }
 .stat-card .sub { font-size: 10px; color: var(--text-muted); }
 
+/* ═══ Section Head ═══ */
+.section-head {
+  margin-bottom: 12px;
+}
+.section-kicker {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--emerald);
+  margin-bottom: 2px;
+  text-transform: uppercase;
+}
+.section-head h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.section-head p {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 /* ═══ Chart Layout ═══ */
 .chart-row2 {
   display: grid; grid-template-columns: 2fr 1fr;
-  gap: 14px; margin-bottom: 14px;
+  gap: 14px; margin-bottom: 16px;
 }
 .chart-row3 {
   display: grid; grid-template-columns: 1fr 1fr;
-  gap: 14px; margin-bottom: 14px;
+  gap: 14px; margin-bottom: 16px;
 }
 .chart-card {
   background: var(--card-bg); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow);
+  border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow);
 }
-.chart-card h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
 .chart-wrap { position: relative; }
 .chart-wrap canvas { width: 100%; }
 .chart-empty {
@@ -769,18 +866,73 @@ body {
   width: 260px !important; height: 260px !important;
 }
 
+/* ═══ Gauge Grid — Dual Half-Circle ═══ */
+.gauge-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 8px 0;
+}
+.gauge-item {
+  text-align: center;
+}
+.gauge-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.gauge-canvas-wrap {
+  width: 140px;
+  height: 80px;
+  margin: 0 auto;
+  overflow: hidden;
+}
+.gauge-canvas-wrap canvas {
+  width: 140px !important;
+  height: 140px !important;
+}
+.gauge-value {
+  font-size: 22px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+.gauge-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.gauge-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 120px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 /* ═══ Footer ═══ */
 footer {
   text-align: center; color: var(--text-muted);
-  font-size: 10px; padding: 12px 0 20px;
+  font-size: 10px; padding: 14px 0 24px;
 }
 
 /* ═══ Responsive ═══ */
+@media (max-width: 900px) {
+  .hero {
+    flex-direction: column;
+  }
+  .hero-right {
+    min-width: 0;
+    width: 100%;
+  }
+}
 @media (max-width: 768px) {
   .cards-row { grid-template-columns: repeat(2, 1fr); }
   .chart-row2, .chart-row3 { grid-template-columns: 1fr; }
   .donut-box { width: 200px; height: 200px; }
   .donut-box canvas { width: 200px !important; height: 200px !important; }
+  .hero-right { grid-template-columns: 1fr; }
 }
 </style>
 </head>
@@ -789,15 +941,34 @@ footer {
 
 <!-- ═══ Hero Panel ═══ -->
 <div class="hero" id="heroPanel">
-  <div>
+  <div class="hero-left">
+    <div class="badge">HERMES USAGE MONITOR</div>
     <h1>Hermes Token 用量看板</h1>
-    <span class="badge">v2.4</span>
+    <div class="subtitle">本地 Hermes Agent Token 消耗统计</div>
+    <div class="meta">
+      <span class="dot-live"></span>
+      <span id="hUpdated">更新时间：—</span>
+      <span>·</span>
+      <span>UTC+8</span>
+    </div>
   </div>
-  <div class="hero-meta" id="hMeta">
-    <span>数据源：state.db</span>
-    <span id="hRange">时间范围：加载中…</span>
-    <span id="hUpdated">更新时间：—</span>
-    <span>UTC+8</span>
+  <div class="hero-right">
+    <div class="hero-info-card">
+      <div class="hcard-label">统计区间</div>
+      <div class="hcard-value small" id="hDateRange">—</div>
+    </div>
+    <div class="hero-info-card">
+      <div class="hcard-label">当前范围</div>
+      <div class="hcard-value" id="hRangeShort">加载中…</div>
+    </div>
+    <div class="hero-info-card">
+      <div class="hcard-label">消息数</div>
+      <div class="hcard-value" id="hMessages">—</div>
+    </div>
+    <div class="hero-info-card">
+      <div class="hcard-label">总 Token</div>
+      <div class="hcard-value" id="hTotalTokens">—</div>
+    </div>
   </div>
 </div>
 
@@ -808,47 +979,40 @@ footer {
 
 <!-- ═══ Controls Bar ═══ -->
 <div class="controls">
-  <!-- Time Range -->
-  <div class="ctrl-group">
-    <span class="ctrl-label">时间</span>
-    <button class="ctrl-btn" data-range="7">7天</button>
-    <button class="ctrl-btn active" data-range="30">30天</button>
-    <button class="ctrl-btn" data-range="90">90天</button>
-    <button class="ctrl-btn" data-range="180">180天</button>
-    <button class="ctrl-btn" data-range="365">365天</button>
-    <button class="ctrl-btn" data-range="all">全部</button>
+  <div class="ctrl-left">
+    <div class="ctrl-group">
+      <span class="ctrl-label">范围</span>
+      <button class="ctrl-btn" data-range="7">7天</button>
+      <button class="ctrl-btn active" data-range="30">30天</button>
+      <button class="ctrl-btn" data-range="90">90天</button>
+      <button class="ctrl-btn" data-range="180">180天</button>
+      <button class="ctrl-btn" data-range="365">365天</button>
+      <button class="ctrl-btn" data-range="all">全部</button>
+    </div>
   </div>
-
-  <div class="ctrl-sep"></div>
-
-  <!-- Metric Selector -->
-  <div class="ctrl-group">
-    <span class="ctrl-label">指标</span>
-    <select class="ctrl-select" id="metricSelect">
-      <option value="total">总 Token</option>
-      <option value="active">活跃 Token</option>
-      <option value="input">输入</option>
-      <option value="output">输出</option>
-      <option value="reasoning">推理</option>
-      <option value="cache_read">缓存读取</option>
-      <option value="cache_write">缓存写入</option>
-      <option value="cache_hit_rate">缓存命中率</option>
-      <option value="user_message_count">消息数</option>
-      <option value="runtime_dedup">运行时长</option>
-      <option value="estimated_cost">估算成本</option>
-    </select>
+  <div class="ctrl-right">
+    <div class="ctrl-group">
+      <span class="ctrl-label">指标</span>
+      <select class="ctrl-select" id="metricSelect">
+        <option value="total">总 Token</option>
+        <option value="active">活跃 Token</option>
+        <option value="input">输入</option>
+        <option value="output">输出</option>
+        <option value="reasoning">推理</option>
+        <option value="cache_read">缓存读取</option>
+        <option value="cache_write">缓存写入</option>
+        <option value="cache_hit_rate">缓存命中率</option>
+        <option value="user_message_count">消息数</option>
+        <option value="runtime_dedup">运行时长</option>
+        <option value="estimated_cost">估算成本</option>
+      </select>
+    </div>
+    <button class="ctrl-btn" onclick="fetchData()" title="手动刷新" id="btnRefresh">↻ 刷新</button>
+    <button class="ctrl-toggle" id="btnAuto" onclick="toggleAuto()" title="自动刷新（30秒）">
+      <span class="dot"></span> 自动
+    </button>
+    <button class="ctrl-btn" id="btnTheme" onclick="toggleTheme()" title="切换主题">☀</button>
   </div>
-
-  <div class="ctrl-sep"></div>
-
-  <!-- Utility Buttons -->
-  <button class="ctrl-btn" onclick="fetchData()" title="手动刷新" id="btnRefresh">↻ 刷新</button>
-
-  <button class="ctrl-toggle" id="btnAuto" onclick="toggleAuto()" title="自动刷新（30秒）">
-    <span class="dot"></span> 自动
-  </button>
-
-  <button class="ctrl-btn" id="btnTheme" onclick="toggleTheme()" title="切换主题">☀</button>
 </div>
 
 <!-- ═══ Summary Cards ═══ -->
@@ -880,20 +1044,38 @@ footer {
   </div>
 </div>
 
-<!-- ═══ Chart Row: Trend + Breakdown ═══ -->
+<!-- ═══ Chart Row: Trend + Token Breakdown ═══ -->
 <div class="chart-row2">
   <div class="chart-card">
-    <h3>📈 趋势图</h3>
+    <div class="section-head">
+      <div class="section-kicker">TREND</div>
+      <h3>每日走势</h3>
+      <p>按时间展示当前指标与消息数变化</p>
+    </div>
     <div class="chart-wrap" style="height:220px"><canvas id="trendChart"></canvas></div>
   </div>
   <div class="chart-card">
-    <h3>📊 Token 构成</h3>
+    <div class="section-head">
+      <div class="section-kicker">BREAKDOWN</div>
+      <h3>Token 构成</h3>
+      <p>当前范围内各类 Token 占比</p>
+    </div>
     <div id="breakdownEmpty" class="chart-empty" style="display:none">暂无数据</div>
     <div id="breakdownContent">
-      <div id="gvCache" style="font-size:24px;font-weight:700;color:var(--purple);text-align:center">—</div>
-      <div style="font-size:11px;text-align:center;color:var(--text-muted)">缓存命中率</div>
-      <div id="gvReason" style="font-size:24px;font-weight:700;color:var(--amber);text-align:center;margin-top:8px">—</div>
-      <div style="font-size:11px;text-align:center;color:var(--text-muted)">推理占比</div>
+      <div class="gauge-grid">
+        <div class="gauge-item">
+          <div class="gauge-title">输入侧</div>
+          <div class="gauge-canvas-wrap"><canvas id="cacheGauge"></canvas></div>
+          <div class="gauge-value" id="gvCache" style="color:var(--purple)">—</div>
+          <div class="gauge-sub" id="gvCacheSub">缓存读取 —</div>
+        </div>
+        <div class="gauge-item">
+          <div class="gauge-title">输出侧</div>
+          <div class="gauge-canvas-wrap"><canvas id="reasonGauge"></canvas></div>
+          <div class="gauge-value" id="gvReason" style="color:var(--amber)">—</div>
+          <div class="gauge-sub" id="gvReasonSub">推理 —</div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -901,12 +1083,20 @@ footer {
 <!-- ═══ Chart Row: Model Ranking + Provider Distribution ═══ -->
 <div class="chart-row3">
   <div class="chart-card">
-    <h3>🏆 模型排行</h3>
+    <div class="section-head">
+      <div class="section-kicker">LEADERBOARD</div>
+      <h3>模型贡献</h3>
+      <p>按当前指标排序的 Top 8 模型</p>
+    </div>
     <div id="modelEmpty" class="chart-empty" style="display:none">暂无数据</div>
     <div class="chart-wrap" style="height:260px"><canvas id="modelChart"></canvas></div>
   </div>
   <div class="chart-card">
-    <h3>🔵 供应商分布</h3>
+    <div class="section-head">
+      <div class="section-kicker">DISTRIBUTION</div>
+      <h3>供应商分布</h3>
+      <p>当前指标在 provider 间的占比</p>
+    </div>
     <div id="provEmpty" class="chart-empty" style="display:none">暂无数据</div>
     <div class="donut-box">
       <canvas id="provChart"></canvas>
@@ -915,13 +1105,17 @@ footer {
 </div>
 
 <!-- ═══ Cache Hit Rate Trend ═══ -->
-<div class="chart-card" style="margin-bottom:14px">
-  <h3>📉 缓存命中率趋势</h3>
+<div class="chart-card" style="margin-bottom:16px">
+  <div class="section-head">
+    <div class="section-kicker">PERFORMANCE</div>
+    <h3>缓存命中率趋势</h3>
+    <p>按 Provider + 模型统计输入侧缓存占比（仅展示 Top 8）</p>
+  </div>
   <div id="chTrendEmpty" class="chart-empty" style="display:none">暂无数据</div>
   <div class="chart-wrap" style="height:260px"><canvas id="chTrendChart"></canvas></div>
 </div>
 
-<footer>Hermes Token 用量看板 · v2.4 · UTC+8</footer>
+<footer>Hermes Token 用量看板 · v2.5 · UTC+8</footer>
 </div>
 
 <script>
@@ -936,7 +1130,7 @@ var autoRefresh = false;
 var autoTimer = null;
 
 // Chart instances
-var trendChart, provChart, modelChart, chTrendChart;
+var trendChart, provChart, modelChart, chTrendChart, cacheGauge, reasonGauge;
 
 // ═══════════════════════════════════════════════
 // i18n — Metric Labels (Chinese default)
@@ -1031,8 +1225,7 @@ function fv(v, m) {
 // ═══════════════════════════════════════════════
 var PM_COLORS = [
   '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b',
-  '#f43f5e', '#06b6d4', '#ec4899', '#6366f1',
-  '#14b8a6', '#eab308', '#ef4444', '#84cc16'
+  '#f43f5e', '#06b6d4', '#ec4899', '#6366f1'
 ];
 
 // ═══════════════════════════════════════════════
@@ -1169,6 +1362,45 @@ function showCanvas(id, show) {
 }
 
 // ═══════════════════════════════════════════════
+// Gauge Helper — Draw half-circle gauge
+// ═══════════════════════════════════════════════
+
+function drawGauge(canvasId, chartRef, pct, color) {
+  var canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+
+  if (chartRef) {
+    chartRef.destroy();
+  }
+
+  var val = Math.max(0, Math.min(100, pct || 0));
+  var remaining = 100 - val;
+
+  return new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      datasets: [{
+        data: [val, remaining],
+        backgroundColor: [color, 'rgba(128,128,128,0.08)'],
+        borderWidth: 0
+      }]
+    },
+    options: {
+      responsive: false,
+      maintainAspectRatio: false,
+      cutout: '70%',
+      rotation: -90,
+      circumference: 180,
+      plugins: {
+        legend: { display: false },
+        tooltip: { enabled: false }
+      }
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════
 // Chart Initialization
 // ═══════════════════════════════════════════════
 
@@ -1258,7 +1490,7 @@ function initCharts() {
         plugins: {
           legend: {
             position: 'bottom',
-            labels: { font: { size: 9 }, usePointStyle: true, pointStyleWidth: 6 }
+            labels: { font: { size: 9 }, usePointStyle: true, pointStyleWidth: 6, boxWidth: 6 }
           }
         },
         scales: {
@@ -1271,6 +1503,10 @@ function initCharts() {
       }
     }
   );
+
+  // Initialize gauges with empty state
+  cacheGauge = drawGauge('cacheGauge', cacheGauge, 0, '#8b5cf6');
+  reasonGauge = drawGauge('reasonGauge', reasonGauge, 0, '#f59e0b');
 }
 
 // ═══════════════════════════════════════════════
@@ -1295,12 +1531,17 @@ function updateUI(data) {
   var m = data.meta;
   var d = data.days || [];
 
-  // Hero metadata
-  document.getElementById('hRange').textContent =
-    '时间范围：' + (m.range === 'all' ? '全部' : m.range + ' 天')
-    + '（' + m.first_day + ' — ' + m.last_day + '）';
+  // Hero metadata — left side
   document.getElementById('hUpdated').textContent =
     '更新时间：' + new Date().toLocaleTimeString();
+
+  // Hero info cards — right side
+  document.getElementById('hDateRange').textContent =
+    m.first_day + ' — ' + m.last_day;
+  document.getElementById('hRangeShort').textContent =
+    m.range === 'all' ? '全部' : '最近 ' + m.range + ' 天';
+  document.getElementById('hMessages').textContent = fm(s.user_message_count);
+  document.getElementById('hTotalTokens').textContent = fs(s.total);
 
   // --- Summary Cards (metric-aware from days) ---
 
@@ -1353,13 +1594,18 @@ function updateUI(data) {
   trendChart.data.datasets[1].label = metric === 'user_message_count' ? '总 Token' : '消息数';
   trendChart.update();
 
-  // --- Breakdown Gauges ---
+  // --- Breakdown Gauges (dual half-circle) ---
   var chDenom = s.input + s.cache_read;
-  document.getElementById('gvCache').textContent =
-    (chDenom > 0 ? (s.cache_read / chDenom * 100).toFixed(1) : '0.0') + '%';
+  var chPct = chDenom > 0 ? (s.cache_read / chDenom * 100) : 0;
+  document.getElementById('gvCache').textContent = chPct.toFixed(1) + '%';
+  document.getElementById('gvCacheSub').textContent = '缓存读取 ' + fs(s.cache_read);
+  cacheGauge = drawGauge('cacheGauge', cacheGauge, chPct, '#8b5cf6');
+
   var outDenom = s.output + s.reasoning;
-  document.getElementById('gvReason').textContent =
-    (outDenom > 0 ? (s.reasoning / outDenom * 100).toFixed(1) : '0.0') + '%';
+  var rPct = outDenom > 0 ? (s.reasoning / outDenom * 100) : 0;
+  document.getElementById('gvReason').textContent = rPct.toFixed(1) + '%';
+  document.getElementById('gvReasonSub').textContent = '推理 ' + fs(s.reasoning);
+  reasonGauge = drawGauge('reasonGauge', reasonGauge, rPct, '#f59e0b');
 
   // --- Model Ranking (empty guard) ---
   var md = (data.models || []).slice();
@@ -1393,7 +1639,7 @@ function updateUI(data) {
     showCanvas('provChart', false);
   }
 
-  // --- Cache Hit Rate Trend (solo mode + enhanced tooltip, empty guard) ---
+  // --- Cache Hit Rate Trend (solo mode + top 8 limit + enhanced tooltip, empty guard) ---
   var pmts = data.provider_model_trends || [];
   if (pmts.length > 0 && pmts[0].days && pmts[0].days.length > 0) {
     showEmpty('chTrendEmpty', false);
@@ -1402,12 +1648,27 @@ function updateUI(data) {
 
     soloCacheKey = null;
 
-    chTrendChart.data.datasets = pmts.map(function(pmt, i) {
+    // Sort by average cache_hit_rate desc, take top 8
+    var sortedPmts = pmts.slice().sort(function(a, b) {
+      var avgA = 0, avgB = 0;
+      if (a.days && a.days.length) {
+        for (var i = 0; i < a.days.length; i++) avgA += a.days[i].cache_hit_rate || 0;
+        avgA /= a.days.length;
+      }
+      if (b.days && b.days.length) {
+        for (var i = 0; i < b.days.length; i++) avgB += b.days[i].cache_hit_rate || 0;
+        avgB /= b.days.length;
+      }
+      return avgB - avgA;
+    });
+    var topPmts = sortedPmts.slice(0, 8);
+
+    chTrendChart.data.datasets = topPmts.map(function(pmt, i) {
       return {
         label: sm(pmt.provider) + '/' + sm(pmt.model),
         data: pmt.days.map(function(d) { return d.cache_hit_rate || 0; }),
-        borderColor: PM_COLORS[i % 12],
-        backgroundColor: PM_COLORS[i % 12],
+        borderColor: PM_COLORS[i % 8],
+        backgroundColor: PM_COLORS[i % 8],
         tension: 0.3,
         pointRadius: 0,
         borderWidth: 2,
@@ -1624,7 +1885,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
 def main():
     """Start the dashboard HTTP server."""
-    print("  Hermes Token Dashboard v2.4")
+    print("  Hermes Token Dashboard v2.5")
     print(f"  Data source: {DB_PATH}")
     print(f"  Timezone:   UTC+8")
     print(f"  Listening:  http://{HOST}:{PORT}")
