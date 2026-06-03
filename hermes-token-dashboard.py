@@ -45,24 +45,40 @@ TZ = timezone(timedelta(hours=8))  # UTC+8, Beijing time
 # ═══════════════════════════════════════════════════════════════
 # 2. Model Pricing Table (USD per 1M tokens)
 # ═══════════════════════════════════════════════════════════════
+# Sources (verified June 2026):
+#   DeepSeek: https://api-docs.deepseek.com/quick_start/pricing
+#   OpenAI:   https://developers.openai.com/api/docs/pricing
+#   Google:   https://ai.google.dev/gemini-api/docs/pricing
+#   MiniMax:  https://platform.minimax.io/docs/guides/pricing-paygo
+#   Xiaomi:   https://pricepertoken.com/pricing-page/model/xiaomi-mimo-v2.5-pro
+#
+# Note: DeepSeek V4 Pro prices below are promotional (75% off, ends 2026-05-31).
+# After promo, official prices: input $1.74, output $3.48.
 
 MODEL_PRICING = {
-    "deepseek-v4-pro":      {"input": 12,   "output": 24,  "cache_read": 1,     "cache_write": 12,  "reasoning": 12},
-    "deepseek-v4-flash":    {"input": 1,    "output": 2,   "cache_read": 0.2,   "cache_write": 1,   "reasoning": 1},
-    "deepseek-v4":          {"input": 1,    "output": 2,   "cache_read": 0.2,   "cache_write": 1,   "reasoning": 1},
-    "gpt-5.5":              {"input": 2.5,  "output": 10,  "cache_read": 1.25,  "cache_write": 2.5, "reasoning": 15},
-    "gpt-5.4":              {"input": 1.25, "output": 5,   "cache_read": 0.625, "cache_write": 1.25,"reasoning": 7.5},
-    "gpt-5":                {"input": 1.25, "output": 5,   "cache_read": 0.625, "cache_write": 1.25,"reasoning": 7.5},
-    "gemini-3.1-flash-lite":{"input": 0.075,"output": 0.30,"cache_read": 0.01875,"cache_write": 0.075,"reasoning": 0.075},
-    "gemini-3.0-flash":     {"input": 0.15, "output": 0.60,"cache_read": 0.0375,"cache_write": 0.15,"reasoning": 0.15},
-    "gemini-3":             {"input": 1.25, "output": 5,   "cache_read": 0.3125,"cache_write": 1.25,"reasoning": 5},
-    "minimax-m2.7":         {"input": 0.3,  "output": 1.2, "cache_read": 0.075, "cache_write": 0.3, "reasoning": 0.3},
-    "minimax-m2.5":         {"input": 0.3,  "output": 1.2, "cache_read": 0.075, "cache_write": 0.3, "reasoning": 0.3},
-    "mimo-v2.5-pro":        {"input": 1.5,  "output": 6,   "cache_read": 0.375, "cache_write": 1.5, "reasoning": 1.5},
-    "mimo-v2.5":            {"input": 1.5,  "output": 6,   "cache_read": 0.375, "cache_write": 1.5, "reasoning": 1.5},
-    "mimo-v2.5-free":       {"input": 0,    "output": 0,   "cache_read": 0,     "cache_write": 0,   "reasoning": 0},
-    "gemma-4-31b-it":       {"input": 0,    "output": 0,   "cache_read": 0,     "cache_write": 0,   "reasoning": 0},
-    "default":              {"input": 1,    "output": 3,   "cache_read": 0.25,  "cache_write": 1,   "reasoning": 1},
+    # DeepSeek V4 (official API, June 2026)
+    "deepseek-v4-flash":    {"input": 0.14,  "output": 0.28,  "cache_read": 0.0028, "cache_write": 0.14,  "reasoning": 0.14},
+    "deepseek-v4-pro":      {"input": 0.435, "output": 0.87,  "cache_read": 0.0036, "cache_write": 0.435, "reasoning": 0.435},
+    "deepseek-v4":          {"input": 0.14,  "output": 0.28,  "cache_read": 0.0028, "cache_write": 0.14,  "reasoning": 0.14},
+    # OpenAI GPT (official API, June 2026)
+    "gpt-5.5":              {"input": 5.00,  "output": 30.00, "cache_read": 0.50,   "cache_write": 5.00,  "reasoning": 5.00},
+    "gpt-5.4":              {"input": 2.50,  "output": 15.00, "cache_read": 0.25,   "cache_write": 2.50,  "reasoning": 2.50},
+    "gpt-5":                {"input": 2.50,  "output": 15.00, "cache_read": 0.25,   "cache_write": 2.50,  "reasoning": 2.50},
+    # Google Gemini (official API, June 2026)
+    "gemini-3.1-flash-lite":{"input": 0.25,  "output": 1.50,  "cache_read": 0.02,   "cache_write": 0.08,  "reasoning": 0.25},
+    "gemini-3.0-flash":     {"input": 0.50,  "output": 3.00,  "cache_read": 0.05,   "cache_write": 0.15,  "reasoning": 0.50},
+    "gemini-3":             {"input": 2.00,  "output": 12.00, "cache_read": 0.50,   "cache_write": 2.00,  "reasoning": 2.00},
+    # MiniMax (official API, June 2026)
+    "minimax-m2.7":         {"input": 0.279, "output": 1.20,  "cache_read": 0.028,  "cache_write": 0.279, "reasoning": 0.279},
+    "minimax-m2.5":         {"input": 0.15,  "output": 1.20,  "cache_read": 0.015,  "cache_write": 0.15,  "reasoning": 0.15},
+    # Xiaomi MiMo (official API, June 2026)
+    "mimo-v2.5-pro":        {"input": 0.435, "output": 0.87,  "cache_read": 0.044,  "cache_write": 0.435, "reasoning": 0.435},
+    "mimo-v2.5":            {"input": 0.40,  "output": 2.00,  "cache_read": 0.04,   "cache_write": 0.40,  "reasoning": 0.40},
+    "mimo-v2.5-free":       {"input": 0,     "output": 0,     "cache_read": 0,      "cache_write": 0,     "reasoning": 0},
+    # Google Gemma (free)
+    "gemma-4-31b-it":       {"input": 0,     "output": 0,     "cache_read": 0,      "cache_write": 0,     "reasoning": 0},
+    # Fallback
+    "default":              {"input": 1,     "output": 3,     "cache_read": 0.25,   "cache_write": 1,     "reasoning": 1},
 }
 
 # Keywords that identify free-tier models
