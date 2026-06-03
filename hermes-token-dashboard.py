@@ -71,9 +71,9 @@ MODEL_PRICING = {
     # MiniMax (official API, June 2026)
     "minimax-m2.7":         {"input": 0.279, "output": 1.20,  "cache_read": 0.028,  "cache_write": 0.279, "reasoning": 0.279},
     "minimax-m2.5":         {"input": 0.15,  "output": 1.20,  "cache_read": 0.015,  "cache_write": 0.15,  "reasoning": 0.15},
-    # Xiaomi MiMo (official API, June 2026)
-    "mimo-v2.5-pro":        {"input": 0.435, "output": 0.87,  "cache_read": 0.044,  "cache_write": 0.435, "reasoning": 0.435},
-    "mimo-v2.5":            {"input": 0.40,  "output": 2.00,  "cache_read": 0.04,   "cache_write": 0.40,  "reasoning": 0.40},
+    # Xiaomi MiMo (official API, June 2026 — aligned with DeepSeek V4 pricing)
+    "mimo-v2.5-pro":        {"input": 0.435, "output": 0.87,  "cache_read": 0.0036, "cache_write": 0.435, "reasoning": 0.435},
+    "mimo-v2.5":            {"input": 0.14,  "output": 0.28,  "cache_read": 0.0028, "cache_write": 0.14,  "reasoning": 0.14},
     "mimo-v2.5-free":       {"input": 0,     "output": 0,     "cache_read": 0,      "cache_write": 0,     "reasoning": 0},
     # Google Gemma (free)
     "gemma-4-31b-it":       {"input": 0,     "output": 0,     "cache_read": 0,      "cache_write": 0,     "reasoning": 0},
