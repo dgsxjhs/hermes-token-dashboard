@@ -1,4 +1,4 @@
-"""Tests for Hermes Token Dashboard v2.2.4
+"""Tests for Hermes Token Dashboard v2.6
 Usage: python3 -m unittest discover -s tests"""
 
 import unittest
@@ -143,6 +143,108 @@ class TestV223Fields(unittest.TestCase):
         self.assertIn("estimated_cost",st["days"][0])
         self.assertIn("estimated_cost",st["models"][0])
         self.assertIn("estimated_cost",st["providers"][0])
+
+
+class TestV26CostInsight(unittest.TestCase):
+    """v2.6: Cost insight fields in summary, models, providers, days."""
+    def setUp(self): self.dash = _dash
+    def _mk(self, model="gpt-5.4", provider="openai", inp=1000, out=100, cr=5000, cw=0, rt=50, msg=5, api=3):
+        return {"id":"t","model":model,"billing_provider":provider,"started_at":1700000000.0,"ended_at":1700000100.0,"source":"t","input_tokens":inp,"output_tokens":out,"cache_read_tokens":cr,"cache_write_tokens":cw,"reasoning_tokens":rt,"message_count":msg,"tool_call_count":0,"api_call_count":api}
+
+    # 1. summary has estimated_no_cache_cost
+    def test_summary_no_cache_cost(self):
+        s=[self._mk()]; st=self.dash.aggregate_stats(s)
+        self.assertIn("estimated_no_cache_cost", st["summary"])
+
+    # 2. summary has estimated_cache_savings
+    def test_summary_cache_savings(self):
+        s=[self._mk()]; st=self.dash.aggregate_stats(s)
+        self.assertIn("estimated_cache_savings", st["summary"])
+
+    # 3. summary has forecast_30d_cost
+    def test_summary_forecast_30d(self):
+        s=[self._mk()]; st=self.dash.aggregate_stats(s)
+        self.assertIn("forecast_30d_cost", st["summary"])
+        self.assertGreaterEqual(st["summary"]["forecast_30d_cost"], 0)
+
+    # 4. summary has cost_per_1m_active_tokens
+    def test_summary_cost_per_1m(self):
+        s=[self._mk()]; st=self.dash.aggregate_stats(s)
+        self.assertIn("cost_per_1m_active_tokens", st["summary"])
+
+    # 5. summary has active_tokens_per_usd
+    def test_summary_active_per_usd(self):
+        s=[self._mk()]; st=self.dash.aggregate_stats(s)
+        self.assertIn("active_tokens_per_usd", st["summary"])
+
+    # 6. models have cost efficiency fields
+    def test_model_cost_efficiency_fields(self):
+        s=[self._mk()]; st=self.dash.aggregate_stats(s); m=st["models"][0]
+        for f in ["estimated_no_cache_cost", "estimated_cache_savings",
+                   "cache_savings_rate", "cost_per_1m_active_tokens", "active_tokens_per_usd"]:
+            self.assertIn(f, m, f"model missing: {f}")
+
+    # 7. providers have cost efficiency fields
+    def test_provider_cost_efficiency_fields(self):
+        s=[self._mk()]; st=self.dash.aggregate_stats(s); p=st["providers"][0]
+        for f in ["estimated_no_cache_cost", "estimated_cache_savings",
+                   "cache_savings_rate", "cost_per_1m_active_tokens"]:
+            self.assertIn(f, p, f"provider missing: {f}")
+
+    # 8. days have cost fields
+    def test_days_cost_fields(self):
+        s=[self._mk()]; st=self.dash.aggregate_stats(s); d=st["days"][0]
+        for f in ["estimated_no_cache_cost", "estimated_cache_savings", "estimated_cost"]:
+            self.assertIn(f, d, f"days missing: {f}")
+
+    # 9. hourly_usage length is 24
+    def test_hourly_usage_length(self):
+        s=[self._mk()]; st=self.dash.aggregate_stats(s)
+        self.assertIn("hourly_usage", st)
+        self.assertEqual(len(st["hourly_usage"]), 24)
+
+    # 10. hourly_usage entry fields
+    def test_hourly_usage_fields(self):
+        s=[self._mk()]; st=self.dash.aggregate_stats(s); h=st["hourly_usage"][0]
+        for f in ["hour", "total", "active", "estimated_cost", "sessions", "user_message_count"]:
+            self.assertIn(f, h, f"hourly_usage missing: {f}")
+
+    # 11. cache savings formula: no_cache_cost > estimated_cost when cache_read > 0
+    def test_cache_savings_formula(self):
+        s=[self._mk(inp=1000, cr=5000, out=100, rt=50)]
+        st=self.dash.aggregate_stats(s)
+        su=st["summary"]
+        self.assertGreater(su["estimated_no_cache_cost"], su["estimated_cost"])
+        self.assertGreater(su["estimated_cache_savings"], 0)
+
+    # 12. free model does not cause division by zero
+    def test_free_model_no_div_zero(self):
+        s=[self._mk(model="nvidia/nemotron-3-super-120b-a12b:free")]
+        st=self.dash.aggregate_stats(s)
+        m=st["models"][0]
+        self.assertEqual(m["cost_per_1m_active_tokens"], 0)
+        self.assertIsNone(m["active_tokens_per_usd"])
+
+    # 13. cost=0 does not cause active_tokens_per_usd error
+    def test_zero_cost_no_error(self):
+        s=[self._mk(model="mimo-v2.5-free")]
+        st=self.dash.aggregate_stats(s)
+        m=st["models"][0]
+        # Should not raise, should be None
+        self.assertIsNone(m["active_tokens_per_usd"])
+
+    # 14. 30d forecast uses daily avg
+    def test_forecast_30d_uses_daily_avg(self):
+        import time; now=time.time()
+        sessions=[]
+        for i in range(5):
+            s=self._mk(cr=1000)
+            s["started_at"]=now-i*86400
+            sessions.append(s)
+        st=self.dash.aggregate_stats(sessions, range_days=30)
+        su=st["summary"]
+        # forecast should be positive
+        self.assertGreater(su["forecast_30d_cost"], 0)
 
 
 if __name__=="__main__": unittest.main()

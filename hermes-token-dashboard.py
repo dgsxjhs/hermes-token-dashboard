@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Hermes Token Dashboard v2.5
+Hermes Token Dashboard v2.6
 
 Local token usage dashboard for Hermes Agent.
-
 Data source:
     ~/.hermes/state.db -> sessions table
 
@@ -16,7 +15,7 @@ Design:
     No Node.js, no Rust, no Python third-party dependencies.
     UTC+8 fixed timezone.
 
-v2.4: Frontend overhaul — Chinese default, fixed donut, manual refresh, empty data protection.
+v2.6: Cost insight - cache savings, efficiency ranking, hourly usage.
 """
 
 import sqlite3
@@ -219,6 +218,33 @@ def _calc_cost(model, inp, out, cr, cw, rt):
     ) / 1_000_000
 
 
+def _calc_no_cache_cost(model, inp, out, cr, cw, rt):
+    """Calculate cost if no cache existed (all cache tokens at input price)."""
+    pricing, _ = get_pricing(model)
+    no_cache_input = inp + cr + cw
+    return (
+        no_cache_input * pricing["input"]
+        + out * pricing["output"]
+        + rt * pricing["reasoning"]
+    ) / 1_000_000
+
+
+def _calc_cache_savings(model, inp, out, cr, cw, rt):
+    """Calculate estimated savings from cache (no_cache_cost - estimated_cost)."""
+    return max(0.0, _calc_no_cache_cost(model, inp, out, cr, cw, rt)
+               - _calc_cost(model, inp, out, cr, cw, rt))
+
+
+def _efficiency_fields(cost, inp, out, rt):
+    """Compute cost efficiency fields shared by summary/model/provider."""
+    active = inp + out + rt
+    no_cache_cost = 0  # caller computes separately if needed
+    return {
+        "cost_per_1m_active_tokens": round(cost / active * 1_000_000, 4) if active > 0 else 0,
+        "active_tokens_per_usd": round(active / cost, 2) if cost > 0 else None,
+    }
+
+
 def _build_day_entry(key, d, is_hourly=False):
     """Build a single day/hour entry for the 'days' array."""
     total_tokens = (
@@ -226,6 +252,7 @@ def _build_day_entry(key, d, is_hourly=False):
         + d["cache_write"] + d["reasoning"]
     )
     denom = d["input"] + d["cache_read"]
+    # Cost insight fields (filled by caller after per-model cost computed)
     return {
         "date": key,
         "total": total_tokens,
@@ -238,7 +265,9 @@ def _build_day_entry(key, d, is_hourly=False):
         "cache_hit_rate": round(d["cache_read"] / denom * 100, 2) if denom > 0 else 0.0,
         "runtime_dedup": 0,
         "user_message_count": d.get("messages", 0),
-        "estimated_cost": 0,
+        "estimated_cost": d.get("cost", 0),
+        "estimated_no_cache_cost": d.get("no_cache_cost", 0),
+        "estimated_cache_savings": d.get("cache_savings", 0),
     }
 
 
@@ -249,10 +278,16 @@ def _build_model_entry(model_key, d):
         + d["cache_write"] + d["reasoning"]
     )
     denom = d["input"] + d["cache_read"]
+    active = d["input"] + d["output"] + d["reasoning"]
+    cost = d["cost"]
+    no_cache = d.get("no_cache_cost", 0)
+    savings = d.get("cache_savings", 0)
+    cache_savings_rate = round(savings / no_cache * 100, 2) if no_cache > 0 else 0.0
+    eff = _efficiency_fields(cost, d["input"], d["output"], d["reasoning"])
     return {
         "name": model_key,
         "total": total_tokens,
-        "active": d["input"] + d["output"] + d["reasoning"],
+        "active": active,
         "input": d["input"],
         "output": d["output"],
         "reasoning": d["reasoning"],
@@ -261,7 +296,12 @@ def _build_model_entry(model_key, d):
         "cache_hit_rate": round(d["cache_read"] / denom * 100, 2) if denom > 0 else 0.0,
         "runtime_dedup": 0,
         "user_message_count": 0,
-        "estimated_cost": d["cost"],
+        "estimated_cost": cost,
+        "estimated_no_cache_cost": round(no_cache, 6),
+        "estimated_cache_savings": round(savings, 6),
+        "cache_savings_rate": cache_savings_rate,
+        "cost_per_1m_active_tokens": eff["cost_per_1m_active_tokens"],
+        "active_tokens_per_usd": eff["active_tokens_per_usd"],
         "sessions": d["sessions"],
         "api_calls": d["api_calls"],
     }
@@ -293,6 +333,7 @@ def aggregate_stats(sessions, range_days=None):
     agg = {
         "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
         "reasoning": 0, "api_calls": 0, "messages": 0, "cost": 0.0,
+        "no_cache_cost": 0.0, "cache_savings": 0.0,
     }
     today_tokens = 0
     by_model = {}
@@ -323,7 +364,12 @@ def aggregate_stats(sessions, range_days=None):
         agg["reasoning"] += rt
         agg["api_calls"] += api
         agg["messages"] += msg
-        agg["cost"] += _calc_cost(model, inp, out, cr, cw, rt)
+        sess_cost = _calc_cost(model, inp, out, cr, cw, rt)
+        sess_no_cache = _calc_no_cache_cost(model, inp, out, cr, cw, rt)
+        sess_savings = max(0.0, sess_no_cache - sess_cost)
+        agg["cost"] += sess_cost
+        agg["no_cache_cost"] += sess_no_cache
+        agg["cache_savings"] += sess_savings
 
         # Today tokens
         if s.get("started_at"):
@@ -335,6 +381,7 @@ def aggregate_stats(sessions, range_days=None):
         bm_d = by_model.setdefault(model_key, {
             "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
             "reasoning": 0, "sessions": 0, "cost": 0, "api_calls": 0,
+            "no_cache_cost": 0.0, "cache_savings": 0.0,
         })
         bm_d["input"] += inp
         bm_d["output"] += out
@@ -342,20 +389,24 @@ def aggregate_stats(sessions, range_days=None):
         bm_d["cache_write"] += cw
         bm_d["reasoning"] += rt
         bm_d["sessions"] += 1
-        bm_d["cost"] += _calc_cost(model, inp, out, cr, cw, rt)
+        bm_d["cost"] += sess_cost
+        bm_d["no_cache_cost"] += sess_no_cache
+        bm_d["cache_savings"] += sess_savings
         bm_d["api_calls"] += api
 
         # Per-provider aggregation
         bp_p = by_provider_raw.setdefault(provider, {
             "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
-            "reasoning": 0, "cost": 0.0,
+            "reasoning": 0, "cost": 0.0, "no_cache_cost": 0.0, "cache_savings": 0.0,
         })
         bp_p["input"] += inp
         bp_p["output"] += out
         bp_p["cache_read"] += cr
         bp_p["cache_write"] += cw
         bp_p["reasoning"] += rt
-        bp_p["cost"] += _calc_cost(model, inp, out, cr, cw, rt)
+        bp_p["cost"] += sess_cost
+        bp_p["no_cache_cost"] += sess_no_cache
+        bp_p["cache_savings"] += sess_savings
 
         # Time-based aggregation
         if s.get("started_at"):
@@ -363,6 +414,7 @@ def aggregate_stats(sessions, range_days=None):
             bd = by_day.setdefault(day_key, {
                 "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
                 "reasoning": 0, "messages": 0, "sessions": 0,
+                "cost": 0.0, "no_cache_cost": 0.0, "cache_savings": 0.0,
             })
             bd["input"] += inp
             bd["output"] += out
@@ -371,12 +423,15 @@ def aggregate_stats(sessions, range_days=None):
             bd["reasoning"] += rt
             bd["messages"] += msg
             bd["sessions"] += 1
+            bd["cost"] += sess_cost
+            bd["no_cache_cost"] += sess_no_cache
+            bd["cache_savings"] += sess_savings
 
             # Hour-level aggregation
             hour_key = st.strftime("%Y-%m-%dT%H:00")
             bh = by_hour.setdefault(hour_key, {
                 "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
-                "reasoning": 0, "messages": 0, "total": 0,
+                "reasoning": 0, "messages": 0, "total": 0, "cost": 0.0,
             })
             bh["input"] += inp
             bh["output"] += out
@@ -385,6 +440,7 @@ def aggregate_stats(sessions, range_days=None):
             bh["reasoning"] += rt
             bh["messages"] += msg
             bh["total"] += inp + out + cr + cw + rt
+            bh["cost"] += sess_cost
 
             # Provider-model trends (day-level only)
             pm_key = (provider, model_key)
@@ -461,17 +517,27 @@ def aggregate_stats(sessions, range_days=None):
             + d["cache_write"] + d["reasoning"]
         )
         denom = d["input"] + d["cache_read"]
+        active = d["input"] + d["output"] + d["reasoning"]
+        cost = d["cost"]
+        no_cache = d.get("no_cache_cost", 0)
+        savings = d.get("cache_savings", 0)
+        cache_savings_rate = round(savings / no_cache * 100, 2) if no_cache > 0 else 0.0
+        eff = _efficiency_fields(cost, d["input"], d["output"], d["reasoning"])
         providers.append({
             "name": p,
             "total": total_tokens,
-            "active": d["input"] + d["output"] + d["reasoning"],
+            "active": active,
             "input": d["input"],
             "output": d["output"],
             "reasoning": d["reasoning"],
             "cache_read": d["cache_read"],
             "cache_write": d["cache_write"],
             "cache_hit_rate": round(d["cache_read"] / denom * 100, 2) if denom > 0 else 0.0,
-            "estimated_cost": d["cost"],
+            "estimated_cost": cost,
+            "estimated_no_cache_cost": round(no_cache, 6),
+            "estimated_cache_savings": round(savings, 6),
+            "cache_savings_rate": cache_savings_rate,
+            "cost_per_1m_active_tokens": eff["cost_per_1m_active_tokens"],
         })
     providers.sort(key=lambda x: x["total"], reverse=True)
 
@@ -504,6 +570,46 @@ def aggregate_stats(sessions, range_days=None):
     # Date range
     dates_in_range = sorted(by_day.keys())
 
+    # Build hourly_usage (24 entries, UTC+8)
+    hourly_usage = []
+    for h in range(24):
+        hour_total = 0
+        hour_active = 0
+        hour_cost = 0.0
+        hour_sessions = 0
+        hour_msgs = 0
+        for hk, hv in by_hour.items():
+            # Extract hour from UTC+8 key
+            try:
+                hour_int = int(hk.split("T")[1].split(":")[0])
+            except (IndexError, ValueError):
+                continue
+            if hour_int == h:
+                hour_total += hv.get("total", 0)
+                hour_active += hv.get("input", 0) + hv.get("output", 0) + hv.get("reasoning", 0)
+                hour_cost += hv.get("cost", 0.0)
+                hour_sessions += hv.get("messages", 0)  # messages ≈ session activity
+                hour_msgs += hv.get("messages", 0)
+        hourly_usage.append({
+            "hour": h,
+            "total": hour_total,
+            "active": hour_active,
+            "estimated_cost": round(hour_cost, 6),
+            "sessions": hour_sessions,
+            "user_message_count": hour_msgs,
+        })
+
+    # Forecast 30d cost
+    daily_avg_cost = agg["cost"] / days_count if days_count else 0
+    forecast_30d = daily_avg_cost * 30
+
+    # Summary efficiency fields
+    total_active = agg["input"] + agg["output"] + agg["reasoning"]
+    total_no_cache = agg["no_cache_cost"]
+    total_savings = agg["cache_savings"]
+    cache_savings_rate = round(total_savings / total_no_cache * 100, 2) if total_no_cache > 0 else 0.0
+    eff = _efficiency_fields(agg["cost"], agg["input"], agg["output"], agg["reasoning"])
+
     # Assemble response
     return {
         "meta": {
@@ -533,7 +639,13 @@ def aggregate_stats(sessions, range_days=None):
             "runtime_dedup": runtime_dedup,
             "user_message_count": agg["messages"],
             "messages_per_day": round(agg["messages"] / days_count) if days_count else 0,
-            "estimated_cost": agg["cost"],
+            "estimated_cost": round(agg["cost"], 6),
+            "estimated_no_cache_cost": round(total_no_cache, 6),
+            "estimated_cache_savings": round(total_savings, 6),
+            "cache_savings_rate": cache_savings_rate,
+            "forecast_30d_cost": round(forecast_30d, 2),
+            "cost_per_1m_active_tokens": eff["cost_per_1m_active_tokens"],
+            "active_tokens_per_usd": eff["active_tokens_per_usd"],
             "sessions": len(sessions),
             "active_sessions": active_sessions,
             "api_calls": agg["api_calls"],
@@ -561,6 +673,7 @@ def aggregate_stats(sessions, range_days=None):
             "cache_write": agg["cache_write"],
             "reasoning": agg["reasoning"],
         },
+        "hourly_usage": hourly_usage,
     }
 
 
@@ -596,7 +709,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hermes Token 用量看板 v2.5</title>
+<title>Hermes Token 用量看板 v2.6</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
 <style>
 /* ═══ CSS Variables — Light Theme ═══ */
@@ -911,6 +1024,55 @@ body {
   font-size: 13px;
 }
 
+/* ═══ Cost Insight Cards ═══ */
+.cost-cards {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 10px; margin-bottom: 16px;
+}
+.cost-card {
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow);
+}
+.cost-card .lbl {
+  font-size: 10px; color: var(--text-muted); font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+}
+.cost-card .val {
+  font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.cost-card .sub { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+
+/* ═══ Efficiency / Savings Table ═══ */
+.eff-table {
+  width: 100%; font-size: 12px; border-collapse: collapse;
+}
+.eff-table th {
+  text-align: left; font-weight: 500; color: var(--text-muted);
+  padding: 6px 8px; border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.eff-table td {
+  padding: 6px 8px; border-bottom: 1px solid var(--border);
+}
+.eff-table tr:last-child td { border-bottom: none; }
+.eff-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.eff-table .free-tag {
+  color: var(--emerald); font-weight: 600;
+}
+.eff-table .bar-cell {
+  width: 120px;
+}
+.eff-bar-wrap {
+  height: 8px; background: rgba(128,128,128,0.1); border-radius: 4px; overflow: hidden;
+}
+.eff-bar {
+  height: 100%; border-radius: 4px; transition: width 0.3s;
+}
+
+/* ═══ Hourly Usage ═══ */
+.hourly-chart-wrap { position: relative; height: 200px; }
+.hourly-chart-wrap canvas { width: 100%; }
+
 /* ═══ Footer ═══ */
 footer {
   text-align: center; color: var(--text-muted);
@@ -929,6 +1091,7 @@ footer {
 }
 @media (max-width: 768px) {
   .cards-row { grid-template-columns: repeat(2, 1fr); }
+  .cost-cards { grid-template-columns: repeat(2, 1fr); }
   .chart-row2, .chart-row3 { grid-template-columns: 1fr; }
   .donut-box { width: 200px; height: 200px; }
   .donut-box canvas { width: 200px !important; height: 200px !important; }
@@ -1044,6 +1207,30 @@ footer {
   </div>
 </div>
 
+<!-- ═══ Cost Insight Cards ═══ -->
+<div class="cost-cards">
+  <div class="cost-card">
+    <div class="lbl">估算成本</div>
+    <div class="val" id="ciCost" style="color:var(--primary)">—</div>
+    <div class="sub">当前范围</div>
+  </div>
+  <div class="cost-card">
+    <div class="lbl">缓存节省</div>
+    <div class="val" id="ciSavings" style="color:var(--emerald)">—</div>
+    <div class="sub" id="ciSavingsRate">—</div>
+  </div>
+  <div class="cost-card">
+    <div class="lbl">无缓存成本</div>
+    <div class="val" id="ciNoCache" style="color:var(--amber)">—</div>
+    <div class="sub">若无缓存机制</div>
+  </div>
+  <div class="cost-card">
+    <div class="lbl">30天预测</div>
+    <div class="val" id="ciForecast" style="color:var(--purple)">—</div>
+    <div class="sub">按日均推算</div>
+  </div>
+</div>
+
 <!-- ═══ Chart Row: Trend + Token Breakdown ═══ -->
 <div class="chart-row2">
   <div class="chart-card">
@@ -1104,6 +1291,57 @@ footer {
   </div>
 </div>
 
+<!-- ═══ Cost Efficiency + Cache Savings ═══ -->
+<div class="chart-row3" style="margin-bottom:16px">
+  <div class="chart-card">
+    <div class="section-head">
+      <div class="section-kicker" style="color:var(--primary)">EFFICIENCY</div>
+      <h3>模型成本效率</h3>
+      <p>每百万活跃 Token 的估算成本，越低越省</p>
+    </div>
+    <div id="effEmpty" class="chart-empty" style="display:none">暂无数据</div>
+    <div id="effContent" style="overflow-x:auto">
+      <table class="eff-table">
+        <thead><tr>
+          <th>模型</th><th class="num">活跃 Token</th>
+          <th class="num">估算成本</th><th class="num">每百万成本</th>
+          <th class="bar-cell">效率</th>
+        </tr></thead>
+        <tbody id="effBody"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="chart-card">
+    <div class="section-head">
+      <div class="section-kicker" style="color:var(--emerald)">SAVINGS</div>
+      <h3>缓存节省排行</h3>
+      <p>估算缓存机制节省的成本</p>
+    </div>
+    <div id="savEmpty" class="chart-empty" style="display:none">暂无数据</div>
+    <div id="savContent" style="overflow-x:auto">
+      <table class="eff-table">
+        <thead><tr>
+          <th>模型</th><th class="num">缓存节省</th>
+          <th class="num">当前成本</th><th class="num">无缓存成本</th>
+          <th class="num">节省率</th>
+        </tr></thead>
+        <tbody id="savBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ Usage Pattern: Hourly ═══ -->
+<div class="chart-card" style="margin-bottom:16px">
+  <div class="section-head">
+    <div class="section-kicker" style="color:var(--amber)">USAGE PATTERN</div>
+    <h3>使用时段</h3>
+    <p>按北京时间统计各小时 Token 使用量</p>
+  </div>
+  <div id="hourlyEmpty" class="chart-empty" style="display:none">暂无数据</div>
+  <div class="hourly-chart-wrap"><canvas id="hourlyChart"></canvas></div>
+</div>
+
 <!-- ═══ Cache Hit Rate Trend ═══ -->
 <div class="chart-card" style="margin-bottom:16px">
   <div class="section-head">
@@ -1115,7 +1353,7 @@ footer {
   <div class="chart-wrap" style="height:260px"><canvas id="chTrendChart"></canvas></div>
 </div>
 
-<footer>Hermes Token 用量看板 · v2.5 · UTC+8</footer>
+<footer>Hermes Token 用量看板 · v2.6 · UTC+8</footer>
 </div>
 
 <script>
@@ -1130,7 +1368,7 @@ var autoRefresh = false;
 var autoTimer = null;
 
 // Chart instances
-var trendChart, provChart, modelChart, chTrendChart, cacheGauge, reasonGauge;
+var trendChart, provChart, modelChart, chTrendChart, cacheGauge, reasonGauge, hourlyChart;
 
 // ═══════════════════════════════════════════════
 // i18n — Metric Labels (Chinese default)
@@ -1507,6 +1745,50 @@ function initCharts() {
   // Initialize gauges with empty state
   cacheGauge = drawGauge('cacheGauge', cacheGauge, 0, '#8b5cf6');
   reasonGauge = drawGauge('reasonGauge', reasonGauge, 0, '#f59e0b');
+
+  // Hourly usage bar chart
+  hourlyChart = new Chart(
+    document.getElementById('hourlyChart').getContext('2d'),
+    {
+      type: 'bar',
+      data: {
+        labels: [],
+        datasets: [{
+          label: '总 Token',
+          data: [],
+          backgroundColor: 'rgba(59,130,246,0.6)',
+          borderColor: '#3b82f6',
+          borderWidth: 1,
+          borderRadius: 3
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: function(items) { return items[0] ? items[0].label + ':00' : ''; },
+              label: function(ctx) {
+                var hu = hourlyChart._hourlyData || [];
+                var d = hu[ctx.dataIndex] || {};
+                return [
+                  '总 Token: ' + fs(d.total || 0),
+                  '成本: ' + fc(d.estimated_cost || 0),
+                  '消息数: ' + fm(d.user_message_count || 0)
+                ];
+              }
+            }
+          }
+        },
+        scales: {
+          x: { grid: { display: false } },
+          y: { beginAtZero: true }
+        }
+      }
+    }
+  );
 }
 
 // ═══════════════════════════════════════════════
@@ -1578,6 +1860,89 @@ function updateUI(data) {
   document.getElementById('cUtilSub').textContent = isMsg
     ? '期间累计'
     : fm(s.messages_per_day) + ' 条/天';
+
+  // --- Cost Insight Cards ---
+  document.getElementById('ciCost').textContent = fc(s.estimated_cost || 0);
+  document.getElementById('ciSavings').textContent = fc(s.estimated_cache_savings || 0);
+  document.getElementById('ciSavingsRate').textContent =
+    '节省率 ' + (s.cache_savings_rate || 0).toFixed(1) + '%';
+  document.getElementById('ciNoCache').textContent = fc(s.estimated_no_cache_cost || 0);
+  document.getElementById('ciForecast').textContent = fc(s.forecast_30d_cost || 0);
+
+  // --- Efficiency Table (Top 8, sorted by cost_per_1m ascending, free models last) ---
+  var models = (data.models || []).slice();
+  var paidModels = models.filter(function(m) { return m.estimated_cost > 0; });
+  var freeModels = models.filter(function(m) { return m.estimated_cost <= 0; });
+  paidModels.sort(function(a, b) {
+    return (a.cost_per_1m_active_tokens || 0) - (b.cost_per_1m_active_tokens || 0);
+  });
+  var effModels = paidModels.concat(freeModels).slice(0, 8);
+
+  if (effModels.length > 0) {
+    showEmpty('effEmpty', false);
+    document.getElementById('effContent').style.display = '';
+    var maxEff = 0;
+    for (var i = 0; i < paidModels.length; i++) {
+      if (paidModels[i].cost_per_1m_active_tokens > maxEff)
+        maxEff = paidModels[i].cost_per_1m_active_tokens;
+    }
+    var effHtml = '';
+    for (var j = 0; j < effModels.length; j++) {
+      var em = effModels[j];
+      var isFree = em.estimated_cost <= 0;
+      var barW = isFree ? 0 : (maxEff > 0 ? (em.cost_per_1m_active_tokens / maxEff * 100) : 0);
+      effHtml += '<tr>'
+        + '<td>' + sm(em.name) + '</td>'
+        + '<td class="num">' + fs(em.active) + '</td>'
+        + '<td class="num">' + (isFree ? '<span class="free-tag">免费</span>' : fc(em.estimated_cost)) + '</td>'
+        + '<td class="num">' + (isFree ? '<span class="free-tag">—</span>' : '$' + em.cost_per_1m_active_tokens.toFixed(4)) + '</td>'
+        + '<td class="bar-cell"><div class="eff-bar-wrap"><div class="eff-bar" style="width:' + barW + '%;background:var(--primary)"></div></div></td>'
+        + '</tr>';
+    }
+    document.getElementById('effBody').innerHTML = effHtml;
+  } else {
+    showEmpty('effEmpty', true);
+    document.getElementById('effContent').style.display = 'none';
+  }
+
+  // --- Savings Table (Top 8, sorted by cache_savings desc) ---
+  var savModels = models.slice().sort(function(a, b) {
+    return (b.estimated_cache_savings || 0) - (a.estimated_cache_savings || 0);
+  }).slice(0, 8);
+  var hasSavings = savModels.some(function(m) { return (m.estimated_cache_savings || 0) > 0; });
+
+  if (hasSavings) {
+    showEmpty('savEmpty', false);
+    document.getElementById('savContent').style.display = '';
+    var savHtml = '';
+    for (var k = 0; k < savModels.length; k++) {
+      var sm2 = savModels[k];
+      if ((sm2.estimated_cache_savings || 0) <= 0) continue;
+      savHtml += '<tr>'
+        + '<td>' + sm(sm2.name) + '</td>'
+        + '<td class="num" style="color:var(--emerald)">' + fc(sm2.estimated_cache_savings) + '</td>'
+        + '<td class="num">' + fc(sm2.estimated_cost) + '</td>'
+        + '<td class="num">' + fc(sm2.estimated_no_cache_cost) + '</td>'
+        + '<td class="num">' + (sm2.cache_savings_rate || 0).toFixed(1) + '%</td>'
+        + '</tr>';
+    }
+    document.getElementById('savBody').innerHTML = savHtml;
+  } else {
+    showEmpty('savEmpty', true);
+    document.getElementById('savContent').style.display = 'none';
+  }
+
+  // --- Hourly Usage Chart ---
+  var hu = data.hourly_usage || [];
+  if (hu.length > 0 && hu.some(function(h) { return h.total > 0; })) {
+    showEmpty('hourlyEmpty', false);
+    hourlyChart._hourlyData = hu;
+    hourlyChart.data.labels = hu.map(function(h) { return String(h.hour).padStart(2, '0'); });
+    hourlyChart.data.datasets[0].data = hu.map(function(h) { return h.total; });
+    hourlyChart.update();
+  } else {
+    showEmpty('hourlyEmpty', true);
+  }
 
   // --- Trend Chart ---
   var is7 = currentRange === 7;
@@ -1885,7 +2250,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
 def main():
     """Start the dashboard HTTP server."""
-    print("  Hermes Token Dashboard v2.5")
+    print("  Hermes Token Dashboard v2.6")
     print(f"  Data source: {DB_PATH}")
     print(f"  Timezone:   UTC+8")
     print(f"  Listening:  http://{HOST}:{PORT}")

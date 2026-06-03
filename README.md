@@ -34,8 +34,23 @@ python3 hermes-token-dashboard.py
 
 ```bash
 python3 -m py_compile hermes-token-dashboard.py
-python3 -m unittest discover -s tests   # 27 个单元测试
+python3 -m unittest discover -s tests   # 43 个单元测试
 ```
+
+## v2.6
+
+新增成本洞察：
+- 当前范围估算成本
+- 无缓存成本估算
+- 缓存节省金额
+- 30 天成本预测
+- 模型成本效率排行（每百万活跃 Token 成本）
+- 缓存节省排行
+- 使用时段统计（24 小时柱状图）
+
+说明：
+- 成本为估算值
+- 缓存节省为基于价格表推算，不代表账单真实抵扣
 
 ## v2.3
 
