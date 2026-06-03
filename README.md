@@ -34,8 +34,13 @@ python3 hermes-token-dashboard.py
 
 ```bash
 python3 -m py_compile hermes-token-dashboard.py
-python3 -m unittest discover -s tests   # 43 个单元测试
+python3 -m unittest discover -s tests   # 44 个单元测试
 ```
+
+## v2.6.1
+
+- 修复 7 天小时粒度下 `days[]` 成本字段不完整的问题
+- `estimated_no_cache_cost` 和 `estimated_cache_savings` 现在在小时 bucket 中也准确返回
 
 ## v2.6
 

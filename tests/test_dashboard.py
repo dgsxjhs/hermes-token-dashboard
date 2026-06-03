@@ -246,5 +246,23 @@ class TestV26CostInsight(unittest.TestCase):
         # forecast should be positive
         self.assertGreater(su["forecast_30d_cost"], 0)
 
+    # 15. 7-day hourly cost savings fields are accurate
+    def test_7day_hourly_cost_savings_fields(self):
+        import time; now=time.time()
+        s = self._mk(model="gpt-5.4", inp=1000, cr=5000, cw=100, out=100, rt=50)
+        s["started_at"] = now
+        s["ended_at"] = now + 100
+        st = self.dash.aggregate_stats([s], range_days=7)
+        self.assertGreater(len(st["days"]), 0)
+        # Find the hour bucket with data
+        bucket = None
+        for h in st["days"]:
+            if h["estimated_cost"] > 0:
+                bucket = h; break
+        self.assertIsNotNone(bucket, "no hour bucket with cost > 0")
+        self.assertIn("T", bucket["date"])
+        self.assertGreater(bucket["estimated_no_cache_cost"], bucket["estimated_cost"])
+        self.assertGreater(bucket["estimated_cache_savings"], 0)
+
 
 if __name__=="__main__": unittest.main()

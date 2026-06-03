@@ -432,6 +432,7 @@ def aggregate_stats(sessions, range_days=None):
             bh = by_hour.setdefault(hour_key, {
                 "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
                 "reasoning": 0, "messages": 0, "total": 0, "cost": 0.0,
+                "no_cache_cost": 0.0, "cache_savings": 0.0,
             })
             bh["input"] += inp
             bh["output"] += out
@@ -441,6 +442,8 @@ def aggregate_stats(sessions, range_days=None):
             bh["messages"] += msg
             bh["total"] += inp + out + cr + cw + rt
             bh["cost"] += sess_cost
+            bh["no_cache_cost"] += sess_no_cache
+            bh["cache_savings"] += sess_savings
 
             # Provider-model trends (day-level only)
             pm_key = (provider, model_key)
